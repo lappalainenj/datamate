@@ -1,0 +1,11 @@
+*workspace*
+*vscode*
+*.ipynb_checkpoints*
+*.db*
+*.pytest*
+*.egg-info*
+examples/data
+dist
+*__pycache__*
+build
+*.DS_Store*
