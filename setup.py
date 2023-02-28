@@ -1,5 +1,8 @@
 from setuptools import setup, find_packages
 
+with open("README.md", "r") as fh:
+    long_description = fh.read()
+
 setup(
     name="datamate",
     version="0.1",
@@ -18,4 +21,5 @@ setup(
     ],
     author="Janne Lappalainen & Mason McGill",
     description="A data organization and compilation system.",
+    long_description=long_description,
 )

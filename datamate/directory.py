@@ -87,7 +87,7 @@ def set_root_dir(root_dir: Optional[Path]) -> None:
     """
     Set the directory in which to search for Directorys.
     """
-    context.root_dir = root_dir if root_dir is not None else Path(".")
+    context.root_dir = Path(root_dir) if root_dir is not None else Path(".")
 
 
 def get_root_dir() -> Path:
