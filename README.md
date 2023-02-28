@@ -25,7 +25,7 @@ Typical usecases are:
 
 # Examples
 
-Datamate's `Directory` instances can point to (processed) data on the disk,
+Datamate's `Directory` instances can point to (processed) data on the disk (relative to a root directory),
 allowing seamless I/O.
 
 E.g., to store a numpy array
@@ -33,9 +33,9 @@ E.g., to store a numpy array
 ```python
 >>> import datamate
 >>> datamate.set_root_dir("./data")
->>> folder = datamate.Directory("experiment_01")
->>> folder.array = np.arange(5)
->>> folder
+>>> directory = datamate.Directory("experiment_01")  # pointer to ./data/experiment_01
+>>> directory.array = np.arange(5)  # creates parent directory and writes array to h5 file
+>>> directory
 experiment_01/ - Last modified: April 04, 2022 08:24:56
 └── array.h5
 
@@ -47,8 +47,8 @@ To retrieve the array:
 ```python
 >>> import datamate
 >>> datamate.set_root_dir("./data")
->>> folder = datamate.Directory("experiment_01")
->>> folder.array[:]
+>>> directory = datamate.Directory("experiment_01")
+>>> directory.array[:]
 array([0, 1, 2, 3, 4])
 ```
 
@@ -56,7 +56,9 @@ More detailed examples in `examples/01. Introduction to Datamate.ipynb`.
 
 # Installation
 
-tbd
+Using pip:
+
+`pip install datamate`
 
 # Related frameworks
 
