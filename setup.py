@@ -22,4 +22,5 @@ setup(
     author="Janne Lappalainen & Mason McGill",
     description="A data organization and compilation system.",
     long_description=long_description,
+    long_description_content_type="text/markdown",
 )
