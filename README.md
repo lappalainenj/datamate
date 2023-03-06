@@ -7,21 +7,14 @@ input and output of arrays and configurations to disk.
 It provides an interface to the system's filesystem through pointers to files
 and representations of the hierarchical structure.
 
-The core-concepts of datamate are the following:
-
-1. data mate is and object-oriented framework
-2. for maintainability it provides nearly seamless input and output operations to a hierarchical filesystem
-3. for scalability it automates pathing and composability
-4. for explainability it offers optional configuration-based management
-5. for interactive prototyping it offers: hierarchical file views in notebooks, pandas integration, configuration diffs, simultaneous write and read
-
 Typical usecases are:
 
-- eliminate hardcoded absolute paths and filenames
-- structure preprocessing of data
-- keep track of configurations for preprocessing, experiments, analyses
-- create disk-caches with minimal overhead code e.g. to eliminate bottlenecks
-- e.g. use the disk-cache in your `everything_in_here.ipynb` notebook to skip slow computations when restarting the kernel
+- automating pathing and orchestrating data
+- seamless input and output operations to a hierarchical filesystem
+- keep track of configurations, e.g. for preprocessing, experiments, analyses
+- structured preprocessing with minimal overhead code---cause configuration-based, preprocessed data can automatically be computed only once and then referenced to
+- for instance to skip slow computations when restarting the kernel in your `everything_in_here.ipynb` notebook
+- interactive prototyping in data-heterogenous applications: hierarchical file views in notebooks, pandas integration, configuration diffs, simultaneous write and read
 
 # Examples
 
