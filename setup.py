@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name="datamate",
-    version="0.1",
+    version="0.1.1",
     packages=find_packages(),
     install_requires=[
         "pandas",
