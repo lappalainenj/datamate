@@ -36,7 +36,7 @@ import datetime
 from traceback import format_tb
 
 
-# from contextlib import contextmanager
+from contextlib import contextmanager
 
 import h5py as h5
 import numpy as np
@@ -102,6 +102,9 @@ def root(root_dir: Union[str, Path, NoneType] = None):
 
     root_dir (str or Path): root directory that will be set at execution of the
         callable. Optional. Default is None which corresponds to get_root_dir().
+
+    Note, this will take precedence over set_root_dir, and set_root_context context when
+    the callable is called within the context.
     """
 
     def decorator(callable):
@@ -116,6 +119,20 @@ def root(root_dir: Union[str, Path, NoneType] = None):
         return function
 
     return decorator
+
+
+@contextmanager
+def set_root_context(root_dir: Union[str, Path, NoneType] = None):
+    """Set root directory within a context and revert after.
+
+    Example:
+        with set_root_context(dir):
+            Directory(config)
+    """
+    _root_dir = get_root_dir()
+    set_root_dir(root_dir)
+    yield
+    set_root_dir(_root_dir)
 
 
 def enforce_config_match(enforce: bool) -> None:
@@ -222,7 +239,7 @@ class Directory(metaclass=NoInit):
     directory.
 
     If only `conf` is provided, it will search the current `root_dir`
-    for a matching directory, and return an Directory pointing there if it
+    for a matching directory, and return a Directory pointing there if it
     exists. Otherwise, a new Directory will be constructed at the top level of
     the `root_dir`.
 
@@ -414,7 +431,7 @@ class Directory(metaclass=NoInit):
     def parent(self):
         return Directory(self.path.absolute().parent)
 
-    def _override_config(selfconfigec, status=None):
+    def _override_config(self, config, status=None):
         """Overriding config stored in _meta.yaml.
 
         config (Dict): update for meta.config
@@ -541,8 +558,6 @@ class Directory(metaclass=NoInit):
         `key` are transformed into ".", to support accessing encoded files as
         attributes (i.e. `Directory['name.ext'] = val` is equivalent to
         `Directory.name__ext = val`).
-
-        TODO: contextmanager that controls if setattr stores in memory or on disk.
         """
         path = self.path / key
 
@@ -592,7 +607,7 @@ class Directory(metaclass=NoInit):
         elif path.is_file():
             path.unlink()
 
-        # Delete an Directory.
+        # Delete a Directory.
         else:
             shutil.rmtree(path, ignore_errors=True)
 
@@ -814,7 +829,7 @@ def _check_for_init(cls: type) -> bool:
 
 def _directory_from_path(cls: type, path: Path) -> Directory:
     """
-    Return an Directory corresponding to the file tree at `path`.
+    Return a Directory corresponding to the file tree at `path`.
 
     An error is raised if the type recorded in `_meta.yaml`, if any, is not a
     subtype of `cls`.
@@ -846,7 +861,7 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
 
 def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
     """
-    Find or build an Directory with the given type and Namespace.
+    Find or build a Directory with the given type and Namespace.
     """
     directory = _forward_subclass(cls, conf)
     object.__setattr__(directory, "_cached_keys", set())
@@ -880,7 +895,7 @@ def _directory_from_path_and_config(
     cls: type, path: Path, conf: Mapping[str, object]
 ) -> Directory:
     """
-    Find or build an Directory with the given type, path, and Namespace.
+    Find or build a Directory with the given type, path, and Namespace.
     """
     directory = _forward_subclass(cls, conf)
     object.__setattr__(directory, "_cached_keys", set())
@@ -1153,8 +1168,9 @@ def read_meta(path: Path) -> Namespace:
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
-        elif hasattr(meta, "spec"):
+        elif hasattr(meta, "spec"):  # for backwards compatibility
             assert isinstance(meta.spec, Namespace)
+            meta["config"] = meta.pop("spec")
         assert isinstance(meta.status, str)
         return meta
     except:
@@ -1174,7 +1190,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     def convert(_arr):
         if isinstance(_arr, np.ndarray):
             if isinstance(_arr.item(0), (np.character, bytes)):
-                return _arr.astype(np.str)
+                return _arr.astype(str)
         return _arr
 
     df_dict = {
@@ -1197,11 +1213,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
 
     df_dict = valmap(
         convert,
-        {
-            key: val.tolist()
-            for key, val in df_dict.items()
-            if len(val) == most_frequent_length
-        },
+        {key: val for key, val in df_dict.items() if len(val) == most_frequent_length},
     )
     if dtypes is not None:
         df_dict = {
