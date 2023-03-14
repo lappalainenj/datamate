@@ -14,6 +14,7 @@ from datamate.directory import (
     get_check_size_on_init,
     set_verbosity_level,
     root,
+    set_root_context,
 )
 from datamate.namespaces import Namespace, namespacify
 
