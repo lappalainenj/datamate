@@ -13,6 +13,7 @@ setup(
         "numpy",
         "typing_extensions",
         "h5py>=3.6.0",
+        "ipython<8.5",  # cause of https://github.com/ipython/ipython/issues/13830
         "notebook",
         "ipywidgets",
         "tqdm",
