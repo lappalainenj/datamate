@@ -7,7 +7,7 @@ import pytest
 import shutil
 
 from datamate import Directory, Namespace, set_root_dir
-from datamate.directory import ModifiedError
+from datamate.directory import ModifiedError, ModifiedWarning, ConfigWarning
 
 # -- Helper functions ----------------------------------------------------------
 
@@ -465,7 +465,7 @@ def test_modified_error(tmp_path: Path) -> None:
 
     assert a0.meta.modified
 
-    with pytest.raises(ModifiedError):
+    with pytest.warns(ModifiedWarning):
         CustomDirectory(n_zeros=2, n_ones=3)
 
 
