@@ -15,6 +15,7 @@ from datamate.directory import (
     set_verbosity_level,
     root,
     set_root_context,
+    reset_scope,
 )
 from datamate.namespaces import Namespace, namespacify
 
