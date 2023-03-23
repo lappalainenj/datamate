@@ -48,7 +48,15 @@ from datamate.namespaces import Namespace, namespacify
 
 __all__ = ["Directory", "ArrayFile"]
 
-# -- Custom Errors --------------------------------------------------------------
+# -- Custom Errors and Warnings ------------------------------------------------
+
+
+class ConfigWarning(Warning):
+    pass
+
+
+class ModifiedWarning(Warning):
+    pass
 
 
 class ModifiedError(Exception):
@@ -193,7 +201,7 @@ def get_scope() -> Dict[str, type]:
     return context.scope if hasattr(context, "scope") else get_default_scope()
 
 
-def get_default_scope() -> Dict[str, type]:
+def get_default_scope(cls: object = None) -> Dict[str, type]:
     """
     Return the default scope used for "type" field resolution.
     """
@@ -201,21 +209,31 @@ def get_default_scope() -> Dict[str, type]:
     def subclasses(t: type) -> Iterator[type]:
         yield from itertools.chain([t], *map(subclasses, t.__subclasses__()))
 
+    cls = cls or Directory
     scope: Dict[str, type] = {}
-    for t in subclasses(Directory):
+    for t in subclasses(cls):
         scope[t.__qualname__] = t
     return scope
+
+
+def reset_scope(cls: object = None) -> None:
+    """
+    Reset the scope to the default scope.
+    """
+    set_scope(get_default_scope(cls))
 
 
 # -- Directorys -----------------------------------------------------------------
 
 
-class NoInit(type):
+class NonExistingDirectory(type):
+    """Directory metaclass to allow create non-existing Directory instances."""
+
     def __call__(cls, *args, **kwargs):
         return cls.__new__(cls, *args, **kwargs)
 
 
-class Directory(metaclass=NoInit):
+class Directory(metaclass=NonExistingDirectory):
     """
     An array- and metadata-friendly view into a directory
 
@@ -452,7 +470,7 @@ class Directory(metaclass=NoInit):
                         f"Overriding config. Diff is:"
                         f'{config.diff(current_config, name1="passed", name2="stored")}'
                     ),
-                    Warning,
+                    ConfigWarning,
                     stacklevel=2,
                 )
             write_meta(config=config, status="overridden")
@@ -471,7 +489,7 @@ class Directory(metaclass=NoInit):
                 warnings.simplefilter("always")
                 warnings.warn(
                     (f"Overriding status {current_status} to {status}"),
-                    Warning,
+                    ConfigWarning,
                     stacklevel=2,
                 )
         write_meta(config=self.config, status=status)
@@ -561,9 +579,6 @@ class Directory(metaclass=NoInit):
         """
         path = self.path / key
 
-        if self.config is not None and self.status == "done":
-            self._modified_past_init(True)
-
         # Copy an existing file or directory.
         if isinstance(val, Path):
             if os.path.isfile(val):
@@ -585,8 +600,15 @@ class Directory(metaclass=NoInit):
                 raise TypeError(
                     format_tb(err.__traceback__)[0]
                     + err.args[0]
-                    + f"\nYou're trying to store {val} which cannot be converted to h5-file."
+                    + f"\nYou're trying to store {val} which cannot be converted to h5-file in {path}."
+                    + "\nFor reference of supported types, see https://docs.h5py.org/en/stable/faq.html?highlight=types#numpy-object-types"
+                    + "\nE.g. NumPy unicode strings must be converted to 'S' strings and back:"
+                    + "\nfoo.bar = array.astype('S') to store and foo.bar[:].astype('U') to retrieve."
                 ) from None
+
+        if self.config is not None and self.status == "done":
+            # Track if a Directory has been modified past __init__
+            self._modified_past_init(True)
 
     def __delitem__(self, key: str) -> None:
         """
@@ -695,6 +717,10 @@ class Directory(metaclass=NoInit):
         return self.__getitem__(key.replace("__", "."))
 
     def __setattr__(self, key: str, value: object) -> None:
+        # Fix autoreload related effect.
+        if key.startswith("__") and key.endswith("__"):
+            object.__setattr__(self, key, value)
+            return
         self.__setitem__(key.replace("__", "."), value)
 
     def __delattr__(self, key: str) -> None:
@@ -864,24 +890,15 @@ def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
     Find or build a Directory with the given type and Namespace.
     """
     directory = _forward_subclass(cls, conf)
+    new_dir_path = _new_directory_path(type(directory))
     object.__setattr__(directory, "_cached_keys", set())
     config = Namespace(**directory._config)
 
-    for path in Path(get_root_dir()).glob("*"):
-        meta = read_meta(path)
-
-        if getattr(meta, "modified", False):
-            raise ModifiedError()
-
-        if meta.config == config:
-            while meta.status == "running":
-                sleep(0.01)
-                meta = read_meta(path)
-            if meta.status == "done":
-                object.__setattr__(directory, "path", path)
-                return directory
-    else:
-        object.__setattr__(directory, "path", _new_directory_path(type(directory)))
+    def _new_directory():
+        object.__setattr__(directory, "path", new_dir_path)
+        # return empty path cause only the type field is populated
+        if list(config.keys()) == ["type"]:
+            return directory
         # catches FileExistsError for the case when two processes try to
         # build the same directory simultaneously
         try:
@@ -889,6 +906,42 @@ def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
         except FileExistsError:
             return _directory_from_config(cls, conf)
         return directory
+
+    for path in Path(get_root_dir()).glob("*"):
+        meta = read_meta(path)
+
+        if meta.config == config:
+            if getattr(meta, "modified", False):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("always")
+                    warnings.warn(
+                        (
+                            f"The Directory {path} has been modified after being build."
+                            + f"\nBuilding a new directory {new_dir_path} to prevent that the files you would get from the object"
+                            + " mismatch the files you would expect based on your __init__ and configuration."
+                            + "\nYou can circumvent this"
+                            + " by e.g. using the explicit path as constructor (see Directory docs)."
+                        ),
+                        ModifiedWarning,
+                        stacklevel=2,
+                    )
+                return _new_directory()
+            # raise ModifiedError(
+            #             f"The Directory {path} has been modified after being build."
+            #             + "\nThis could mean that the files you would get from the object"
+            #             + " mismatch the files you would expect based on your configuration."
+            #             + "\nYou can circumvent this error"
+            #             + " by e.g. using the path as constructor"
+            #             + " as explained in the Directory docs."
+            #         )
+
+            while meta.status == "running":
+                sleep(0.01)
+                meta = read_meta(path)
+            if meta.status == "done":
+                object.__setattr__(directory, "path", path)
+                return directory
+    return _new_directory()
 
 
 def _directory_from_path_and_config(
@@ -1041,8 +1094,15 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
     elif isinstance(cls_override, str):
         try:
             cls = get_scope()[cls_override]
-        except:
-            raise KeyError(f'"{cls_override}" can\'t be resolved.')
+        except KeyError as e:
+            raise KeyError(
+                f'"{cls_override}" can\'t be resolved because it is not found'
+                + f" inside the scope of Directory subclasses. Typo?"
+                + " If this happens in the context of autoreload enabled in"
+                + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
+                + " as a workaround or restart the kernel"
+                + f" (background: https://github.com/ipython/ipython/issues/12399)."
+            ) from e
 
     # Construct and return a `Configurable` instance.
     obj = object.__new__(cls)
