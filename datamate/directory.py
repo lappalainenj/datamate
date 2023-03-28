@@ -106,20 +106,43 @@ def get_root_dir() -> Path:
 
 
 def root(root_dir: Union[str, Path, NoneType] = None):
-    """Wraps a callable to control its root directory at execution.
+    """Decorates a callable to fix its individual root directory.
 
-    root_dir (str or Path): root directory that will be set at execution of the
+    root_dir: optional root directory that will be set at execution of the
         callable. Optional. Default is None which corresponds to get_root_dir().
 
-    Note, this will take precedence over set_root_dir, and set_root_context context when
-    the callable is called within the context.
+    Example:
+        @root("/path/to/this/individual/dir")
+        class MyDirectory(Directory):
+            ...
+
+        dir = MyDirectory(...)
+        dir.path.parent == "/path/to/this/individual/dir"
+
+    Note, when decorating with `root`, the decorator has
+    precedence over changing the root dir with `set_root_dir` in the outer scope.
+    However, to still change the root directory for a decorated callable from
+    an outer scope, use `set_root_context` instead.
+
+    Example:
+        with set_root_context(new_dir):
+            dir = MyDirectory(...)
     """
 
     def decorator(callable):
         @functools.wraps(callable)
         def function(*args, **kwargs):
             _root_dir = get_root_dir()
-            set_root_dir(root_dir or _root_dir)
+            within_context = getattr(context, "within_root_context", False)
+            # case 1: root_dir provided
+            if root_dir is not None and not within_context:
+                set_root_dir(root_dir)
+            # case 2: root_dir provided and not within context
+            # case 3: root_dir provided and within context
+            # case 4: root dir not provided and not within context
+            # case 5: root dir not provided and within context
+            else:
+                set_root_dir(_root_dir)
             _return = callable(*args, **kwargs)
             set_root_dir(_root_dir)
             return _return
@@ -136,11 +159,18 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
     Example:
         with set_root_context(dir):
             Directory(config)
+
+    Note, takes precendecence over all other methods to control the root
+        directory.
     """
     _root_dir = get_root_dir()
     set_root_dir(root_dir)
-    yield
-    set_root_dir(_root_dir)
+    context.within_root_context = True
+    try:
+        yield
+    finally:
+        set_root_dir(_root_dir)
+        context.within_root_context = False
 
 
 def enforce_config_match(enforce: bool) -> None:

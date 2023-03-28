@@ -6,7 +6,14 @@ import numpy as np
 import pytest
 import shutil
 
-from datamate import Directory, Namespace, set_root_dir
+from datamate import (
+    Directory,
+    Namespace,
+    set_root_dir,
+    get_root_dir,
+    root,
+    set_root_context,
+)
 from datamate.directory import ModifiedError, ModifiedWarning, ConfigWarning
 
 # -- Helper functions ----------------------------------------------------------
@@ -487,3 +494,56 @@ def test_build_customization(tmp_path: Path) -> None:
     a_binary = DirectoryWithUnaryBuild(tmp_path / "binary", prop=10)
     assert a_unary.field[()] == 10
     assert a_binary.field[()] == 10
+
+
+# -- Test root control ---------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def rooted_dir(tmp_path_factory):
+    path = tmp_path_factory.mktemp("rooted_dir")
+    @root(path)
+    class RootedDirectory(Directory):
+        def __init__(self, config) -> None:
+            self.array = np.arange(config.start, config.stop, config.step)
+
+    return RootedDirectory, path
+
+
+def test_root_dir_provided(tmp_path, rooted_dir):
+    RootedDirectory, rooted_dir_root_path = rooted_dir
+
+    assert rooted_dir_root_path != tmp_path
+
+    # case 1: root dir provided in decorator
+    dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
+    assert dir.path.parent == rooted_dir_root_path
+
+    # case 2: root dir provided and not within context
+    set_root_dir(tmp_path)
+    dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
+    assert dir.path.parent == rooted_dir_root_path
+
+    # case 3: root_dir provided and within context
+    with set_root_context(tmp_path):
+        dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
+        assert dir.path.parent == tmp_path
+
+
+@root()
+class RootedDirectory(Directory):
+    def __init__(self, config) -> None:
+        self.array = np.arange(config.start, config.stop, config.step)
+
+
+def test_root_dir_not_provided(tmp_path):
+    set_root_dir(tmp_path)
+
+    # case 4: root dir not provided and not within context
+    dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
+    assert dir.path.parent == tmp_path
+
+    # case 5: root dir not provided and within context
+    with set_root_context(tmp_path / "subdir"):
+        dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
+        assert dir.path.parent == tmp_path / "subdir"
