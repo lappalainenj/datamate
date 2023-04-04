@@ -87,6 +87,12 @@ class Namespace(Dict[str, Any]):
 
         return repr_in_context(self, 0, 0)
 
+    def __eq__(self, other):
+        return all_true(compare(namespacify(self), namespacify(other)))
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def is_superset(self, superset):
         _keys_subset = set(self)
         _keys_superset = set(superset)
@@ -181,8 +187,6 @@ class Namespace(Dict[str, Any]):
     def equal_values(self, other):
         "Comparison of values, nested."
         # namespacify for type coercion from array to list
-        _self = namespacify(self)
-        other = namespacify(other)
         return compare(self, other)
 
     def copy(self):
@@ -199,6 +203,9 @@ class Namespace(Dict[str, Any]):
 
     def pformat(self):
         return pformat(self)
+
+    def all(self):
+        return all_true(self)
 
 
 def namespacify(obj: object) -> object:
@@ -276,3 +283,24 @@ def compare(obj1, obj2):
         return Namespace(out)
     elif type(obj1) != type(obj2):
         return False
+
+
+def all_true(obj: object) -> bool:
+    """
+    Return True if bool(element) is True for all elements in nested obj.
+    """
+    if isinstance(obj, (type(None), bool, int, float, str, type, bytes)):
+        return bool(obj)
+    elif isinstance(obj, Path):
+        return bool(obj)
+    elif isinstance(obj, (list, tuple)):
+        return all([all_true(v) for v in obj])
+    elif isinstance(obj, (ndarray)):
+        return all([all_true(v.item()) for v in obj])
+    elif isinstance(obj, Mapping):
+        return all([all_true(obj[k]) for k in obj])
+    else:
+        try:
+            return all_true(vars(obj))
+        except TypeError as e:
+            raise TypeError(f"all {obj} of type {type(obj)}: {e}.") from e

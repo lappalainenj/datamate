@@ -1,3 +1,4 @@
+import numpy as np
 from types import SimpleNamespace
 
 from datamate import Namespace, namespacify
@@ -105,3 +106,24 @@ def test_repr():
         "  )\n"
         ")"
     )
+
+
+def test_all():
+    x = Namespace(a = Namespace(b = [1, 2, 3]))
+    assert x.all()
+
+    x = Namespace(a = Namespace(b = [1, 2, 0]))
+    assert not x.all()
+
+    y = x.deepcopy()
+    y.a.b = [4, 2, 1]
+    assert not y == x
+    assert y.all()
+
+    x = Namespace(a = np.arange(3))
+    y = Namespace(a = np.arange(1, 5))
+    assert not x.all() and y.all()
+    assert y != x
+
+    y = Namespace(a = np.arange(3))
+    assert y == x
