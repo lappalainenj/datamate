@@ -65,8 +65,6 @@ class ModifiedError(Exception):
 
 # -- Static type definitions ---------------------------------------------------
 
-from pathlib import Path as Path
-
 
 class ArrayFile(Protocol):
     """
@@ -347,15 +345,21 @@ class Directory(metaclass=NonExistingDirectory):
     def __new__(cls, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
         if path is None and config is None:
-            return _directory(cls)
+            cls = _directory(cls)
         elif path is not None and config is None:
-            return _check_size(_directory_from_path(cls, _resolve_path(path)))
+            cls = _check_size(_directory_from_path(cls, _resolve_path(path)))
         elif path is None and config is not None:
-            return _check_size(_directory_from_config(cls, config))
+            cls = _check_size(_directory_from_config(cls, config))
         elif path is not None and config is not None:
-            return _check_size(
+            cls = _check_size(
                 _directory_from_path_and_config(cls, _resolve_path(path), config)
             )
+        if has_defaults_for_init(cls):
+            cls.__init__(cls._config)
+
+        cls.__doc__ = _update_doc(cls)
+
+        return cls
 
     def __init__(self, config: Config):
         """Implement to compile data at runtime from a configuration."""
@@ -792,6 +796,17 @@ class Directory(metaclass=NonExistingDirectory):
 # -- Directory construction -----------------------------------------------------
 
 
+def get_defaults(cls):
+    if "Config" in cls.__dict__:
+        defaults = {
+            k: v
+            for k, v in cls.Config.__dict__.items()
+            if not (k.startswith("_") or (k.startswith("__") and k.endswith("__")))
+        }
+        return Namespace(defaults)
+    return Namespace({})
+
+
 def _parse_directory_args(
     args: Tuple[object, ...], kwargs: Mapping[str, object]
 ) -> Tuple[Optional[Path], Optional[Mapping[str, object]]]:
@@ -878,9 +893,26 @@ def _directory(cls: type) -> Directory:
     return directory
 
 
-def _check_for_init(cls: type) -> bool:
-    # import pdb; pdb.set_trace()
+def _implements_init(cls: type) -> bool:
+    """True if the class implements `__init__`."""
     return inspect.getsource(cls.__init__).split("\n")[-2].replace(" ", "") != "pass"
+
+
+def has_defaults_for_init(cls):
+    """Directory subclasses that specify
+
+    class Config:
+        foo = 1
+        bar = 2
+
+    and are constructed without arguments will be initialized with
+    `foo=1` and `bar=2`.
+    """
+    return (
+        "Config" in cls.__class__.__dict__
+        and len(inspect.signature(cls.__init__).parameters) == 1
+        # and cls._config.without("type")
+    )
 
 
 def _directory_from_path(cls: type, path: Path) -> Directory:
@@ -890,6 +922,14 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
     An error is raised if the type recorded in `_meta.yaml`, if any, is not a
     subtype of `cls`.
     """
+
+    def _has_defaults_for_init(cls):
+        """True if cls implements Config and __init__(self, config)"""
+        return (
+            "Config" in cls.__dict__
+            and len(inspect.signature(cls.__init__).parameters) == 2
+        )
+
     config = read_meta(path).config or {}
     written_type = get_scope().get(config.get("type", None), None)
 
@@ -897,7 +937,14 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
         raise FileExistsError(f"{path} is a file.")
 
     if context.enforce_config_match:
-        if _check_for_init(cls) and not path.is_dir():
+        # if directory is constructed from path that does not exist,
+        # but that does implement an init function method and has no defaults
+        # for the config, raise an error
+        if (
+            _implements_init(cls)
+            and not path.is_dir()
+            and not _has_defaults_for_init(cls)
+        ):
             raise FileNotFoundError(f"{path} does not exist.")
 
         if written_type is not None and not issubclass(written_type, cls):
@@ -910,6 +957,7 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
         directory = _forward_subclass(cls, config)
     else:
         directory = _forward_subclass(cls, {})
+
     object.__setattr__(directory, "_cached_keys", set())
     object.__setattr__(directory, "path", path)
     return directory
@@ -1046,6 +1094,38 @@ def _build(directory: Directory) -> None:
         raise e
 
 
+def _update_doc(cls):
+    if "Config" not in cls.__class__.__dict__ or not get_defaults(cls.__class__):
+        return cls.__doc__
+    Config = cls.__class__.__dict__["Config"]
+
+    def clsstrip(string):
+        string = string[string.find("'") + 1 : string.rfind("'")]
+        return string.replace("__main__.", "")
+
+    doc = cls.__doc__
+    if doc is None:
+        doc = ""
+    else:
+        doc += "\n\n"
+    doc += "Initialize from config or leave default:\n"
+    doc += "{}(dict(\n{}))"
+    attributes = ""
+    for k, v in Config.__dict__.items():
+        if not k.startswith("__"):
+            if (
+                hasattr(Config, "__annotations__")
+                and Config.__annotations__.get(k, None) is not None
+            ):
+                annotation = Config.__annotations__.get(k)
+                attributes += f"{k}: {clsstrip(repr(annotation))} = {v},\n"
+            else:
+                attributes += f"{k} = {v},\n"
+
+    name = clsstrip(repr(Config)).replace(".Config", "")
+    return doc.format(name, attributes)
+
+
 def _resolve_path(path: Path) -> Path:
     """
     Dereference ".", "..", "~", and "@".
@@ -1136,7 +1216,9 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
     # Construct and return a `Configurable` instance.
     obj = object.__new__(cls)
-    config = Namespace(type=_identify(type(obj)), **config)
+    default_config = get_defaults(cls)
+    default_config.update(config)
+    config = Namespace(type=_identify(type(obj)), **default_config)
     object.__setattr__(obj, "_config", namespacify(config))
     return cast(Directory, obj)
 
