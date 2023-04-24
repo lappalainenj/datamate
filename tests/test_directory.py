@@ -491,7 +491,7 @@ class DirectoryWithBinaryBuild(Directory):
 
 def test_build_customization(tmp_path: Path) -> None:
     a_unary = DirectoryWithUnaryBuild(tmp_path / "unary", prop=10)
-    a_binary = DirectoryWithUnaryBuild(tmp_path / "binary", prop=10)
+    a_binary = DirectoryWithBinaryBuild(tmp_path / "binary", prop=10)
     assert a_unary.field[()] == 10
     assert a_binary.field[()] == 10
 
@@ -502,6 +502,7 @@ def test_build_customization(tmp_path: Path) -> None:
 @pytest.fixture(scope="session")
 def rooted_dir(tmp_path_factory):
     path = tmp_path_factory.mktemp("rooted_dir")
+
     @root(path)
     class RootedDirectory(Directory):
         def __init__(self, config) -> None:
@@ -547,3 +548,115 @@ def test_root_dir_not_provided(tmp_path):
     with set_root_context(tmp_path / "subdir"):
         dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
         assert dir.path.parent == tmp_path / "subdir"
+
+
+# -- test default config
+
+
+class DefaultConfigDir(Directory):
+    class Config:
+        x: int = 2
+
+    def __init__(self, config) -> None:
+        self.x = np.arange(config.x)
+
+
+class FakeDefaultConfigDir(Directory):
+    class Config:
+        pass
+
+    def __init__(self, config) -> None:
+        self.x = np.arange(config.x)
+
+
+def test_default_config(tmp_path):
+    set_root_dir(tmp_path)
+    dir = DefaultConfigDir()
+    assert isinstance(dir, DefaultConfigDir)
+    assert (dir.x[()] == np.arange(2)).all()
+    assert dir.path.parent == tmp_path
+    assert "DefaultConfigDir" in dir.path.name
+
+    dir = DefaultConfigDir("test")
+    assert isinstance(dir, DefaultConfigDir)
+    assert (dir.x[()] == np.arange(2)).all()
+    assert dir.path.parent == tmp_path
+    assert "test" == dir.path.name
+
+    dir = DefaultConfigDir(tmp_path / "test2")
+    assert isinstance(dir, DefaultConfigDir)
+    assert (dir.x[()] == np.arange(2)).all()
+    assert dir.path.parent == tmp_path
+    assert "test2" == dir.path.name
+
+    with pytest.raises(AttributeError):
+        FakeDefaultConfigDir()
+
+    with pytest.raises(AttributeError):
+        FakeDefaultConfigDir("fake_test")
+
+    with pytest.raises(AttributeError):
+        FakeDefaultConfigDir(tmp_path / "fake_test2")
+
+
+# -- test auto docstring
+
+
+class AutoDocConfigDir(Directory):
+    """Dir to test auto docstring based on config."""
+
+    class Config:
+        x: int = 2
+        y: float = 2.0
+        q = Namespace(a=1, b=2)
+
+
+class SoloConfigDocDir(Directory):
+    class Config:
+        x: int = 2
+        y: float = 2.0
+        q = Namespace(a=1, b=2)
+
+
+class EmptyConfigDocDir(Directory):
+    """Dir to test auto docstring based on config."""
+
+    class Config:
+        pass
+
+
+class NoConfigDocDir(Directory):
+    """Dir to test auto docstring based on config."""
+
+    pass
+
+
+def test_auto_doc(tmp_path):
+    a = AutoDocConfigDir()
+
+    doc = "Dir to test auto docstring based on config."
+    doc += "\n\n"
+    doc += "Initialize from config or leave default:\n"
+    doc += "{}(dict(\n{}))"
+    doc = doc.format(
+        "test_directory.AutoDocConfigDir",
+        "x: int = 2,\ny: float = 2.0,\nq = Namespace(a=1, b=2),\n",
+    )
+    assert a.__doc__ == doc
+
+    b = SoloConfigDocDir()
+    doc = "Initialize from config or leave default:\n"
+    doc += "{}(dict(\n{}))"
+    doc = doc.format(
+        "test_directory.SoloConfigDocDir",
+        "x: int = 2,\ny: float = 2.0,\nq = Namespace(a=1, b=2),\n",
+    )
+    assert b.__doc__ == doc
+
+    c = EmptyConfigDocDir()
+    doc = "Dir to test auto docstring based on config."
+    assert c.__doc__ == doc
+
+    d = NoConfigDocDir()
+    doc = "Dir to test auto docstring based on config."
+    assert d.__doc__ == doc
