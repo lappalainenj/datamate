@@ -19,6 +19,7 @@ import functools
 import threading
 from time import sleep
 import inspect
+from numbers import Number
 from typing import (
     Any,
     Iterator,
@@ -60,6 +61,10 @@ class ModifiedWarning(Warning):
 
 
 class ModifiedError(Exception):
+    pass
+
+
+class ImplementationWarning(Warning):
     pass
 
 
@@ -354,8 +359,10 @@ class Directory(metaclass=NonExistingDirectory):
             cls = _check_size(
                 _directory_from_path_and_config(cls, _resolve_path(path), config)
             )
+
+        _check_implementation(cls)
         if has_defaults_for_init(cls):
-            cls.__init__(cls._config)
+            _build(cls)
 
         cls.__doc__ = _update_doc(cls)
 
@@ -911,8 +918,20 @@ def has_defaults_for_init(cls):
     return (
         "Config" in cls.__class__.__dict__
         and len(inspect.signature(cls.__init__).parameters) == 1
-        # and cls._config.without("type")
+        and get_defaults(cls.__class__)
     )
+
+
+def _check_implementation(cls):
+    defaults = get_defaults(cls.__class__)
+    if _implements_init(cls) and not defaults:
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn(
+                (f"The Directory {type(cls)} implements __init__ but not Config."),
+                ImplementationWarning,
+                stacklevel=2,
+            )
 
 
 def _directory_from_path(cls: type, path: Path) -> Directory:
@@ -1072,6 +1091,12 @@ def _build(directory: Directory) -> None:
     Create parent directories, invoke `Directory.__init__`, and store metadata.
     """
     # TODO: Fix YAML generation.
+
+    if directory.path.exists() and directory.status == "done":
+        return
+    elif directory.path.exists() and directory.status == "running":
+        sleep(0.01)
+        return _build(directory)
 
     directory.path.mkdir(parents=True)
 
@@ -1359,12 +1384,7 @@ def directory_to_dict(directory: Directory) -> dict:
 
 
 def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
-    def convert(_arr):
-        if isinstance(_arr, np.ndarray):
-            if isinstance(_arr.item(0), (np.character, bytes)):
-                return _arr.astype(str)
-        return _arr
-
+    """Convert a directory to a pandas DataFrame."""
     df_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
@@ -1372,27 +1392,26 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     }
 
     # Get the lengths of all datasets.
-    _lengths = {k: len(v) or 1 for k, v in df_dict.items()}
+    nelements = {k: len(v) or 1 for k, v in df_dict.items()}
 
-    lengths, counts = np.unique([val for val in _lengths.values()], return_counts=True)
+    lengths, counts = np.unique([val for val in nelements.values()], return_counts=True)
     most_frequent_length = lengths[np.argmax(counts)]
 
     # If there are single element datasets, just create a new column of most_frequent_length and put the value in each row.
     if lengths.min() == 1:
-        for k, v in _lengths.items():
+        for k, v in nelements.items():
             if v == 1:
                 df_dict[k] = df_dict[k].repeat(most_frequent_length)
 
-    df_dict = valmap(
-        convert,
-        {key: val for key, val in df_dict.items() if len(val) == most_frequent_length},
-    )
+    df_dict = byte_to_str(df_dict)
+
     if dtypes is not None:
         df_dict = {
             k: np.array(v).astype(dtypes[k]) for k, v in df_dict.items() if k in dtypes
         }
-
-    return DataFrame.from_dict(df_dict)
+    return DataFrame.from_dict(
+        {k: v.tolist() if v.ndim > 1 else v for k, v in df_dict.items()}
+    )
 
 
 def tree(
@@ -1463,6 +1482,32 @@ def tree(
         )
 
     return tree_string
+
+
+def byte_to_str(obj):
+    """Cast byte elements to string types.
+
+    Note, this function is recursive and will cast all byte elements in a nested
+    list or tuple.
+    """
+    if isinstance(obj, Mapping):
+        return type(obj)({k: byte_to_str(v) for k, v in obj.items()})
+    elif isinstance(obj, np.ndarray):
+        if np.issubdtype(obj.dtype, np.dtype("S")):
+            return obj.astype("U")
+        return obj
+    elif isinstance(obj, list):
+        obj = [byte_to_str(item) for item in obj]
+        return obj
+    elif isinstance(obj, tuple):
+        obj = tuple([byte_to_str(item) for item in obj])
+        return obj
+    elif isinstance(obj, bytes):
+        return obj.decode()
+    elif isinstance(obj, (str, Number)):
+        return obj
+    else:
+        raise TypeError(f"can't cast {obj} of type {type(obj)} to str")
 
 
 # -- Scope search --------------------------------------------------------------

@@ -14,7 +14,12 @@ from datamate import (
     root,
     set_root_context,
 )
-from datamate.directory import ModifiedError, ModifiedWarning, ConfigWarning
+from datamate.directory import (
+    ModifiedError,
+    ModifiedWarning,
+    ConfigWarning,
+    ImplementationWarning,
+)
 
 # -- Helper functions ----------------------------------------------------------
 
@@ -589,13 +594,13 @@ def test_default_config(tmp_path):
     assert dir.path.parent == tmp_path
     assert "test2" == dir.path.name
 
-    with pytest.raises(AttributeError):
+    with pytest.warns(ImplementationWarning):
         FakeDefaultConfigDir()
 
-    with pytest.raises(AttributeError):
+    with pytest.warns(ImplementationWarning):
         FakeDefaultConfigDir("fake_test")
 
-    with pytest.raises(AttributeError):
+    with pytest.warns(ImplementationWarning):
         FakeDefaultConfigDir(tmp_path / "fake_test2")
 
 
