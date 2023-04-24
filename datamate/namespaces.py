@@ -93,6 +93,12 @@ class Namespace(Dict[str, Any]):
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def without(self, key):
+        """Return a copy of the namespace without the specified key."""
+        _copy = self.deepcopy()
+        _copy.pop(key)
+        return _copy
+
     def is_superset(self, superset):
         _keys_subset = set(self)
         _keys_superset = set(superset)
