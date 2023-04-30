@@ -355,8 +355,19 @@ class Directory(metaclass=NonExistingDirectory):
         path, config = _parse_directory_args(args, kwargs)
         cls = _directory(cls)
         _check_implementation(cls)
-        if config is None and has_defaults_for_init(cls) and _implements_init(cls):
-            config = get_defaults(cls)
+
+        defaults = get_defaults(cls)
+
+        if config is None and defaults:  # and _implements_init(cls):
+            # to initialize from defaults if no config or path is provided
+            if path is None:
+                config = defaults
+            # to initialize from defaults if no config and empty path is provided
+            elif path is not None and not path.exists():
+                config = defaults
+            # if a non-empty path is provided, we cannot initialize from defaults
+            else:
+                pass
         # breakpoint()
         if path is not None and config is None:
             cls = _check_size(_directory_from_path(cls, _resolve_path(path)))
@@ -371,12 +382,23 @@ class Directory(metaclass=NonExistingDirectory):
                 # raise ValueError("no configuration provided")
                 pass
 
-        cls.__doc__ = _update_doc(cls)
+        if defaults:
+            _update_doc(cls)
 
         return cls
 
     def __init__(self, config: Config):
-        """Implement to compile data at runtime from a configuration."""
+        """Implement to compile data at runtime from a configuration.
+
+        Note, subclasses should implement Config to determine the interface,
+        types and defaults of `config`.
+
+        Subclasses can implement `__init__(self)` without arguments and still
+        access the configuration via `self.config`.
+
+        To instantiate a subclass of a directory, the config arguments can be
+        given as individual key word arguments or as a dictionary.
+        """
         pass
 
     @property
@@ -594,7 +616,7 @@ class Directory(metaclass=NonExistingDirectory):
                 raise (
                     AssertionError(
                         f"Indexing {self.path.name} at {key} not possible for"
-                        f"Directory at {self.path.parent}. File "
+                        f" Directory at {self.path.parent}. File "
                         f"{self.path.name}.h5 does not exist."
                     )
                 )
@@ -759,6 +781,10 @@ class Directory(metaclass=NonExistingDirectory):
             assert path.suffix == ""
             _extend_h5(path.with_suffix(".h5"), val)
 
+        if self.config is not None and self.status == "done":
+            # Track if a Directory has been modified past __init__
+            self._modified_past_init(True)
+
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
@@ -810,19 +836,47 @@ class Directory(metaclass=NonExistingDirectory):
 # -- Directory construction -----------------------------------------------------
 
 
-def get_defaults(cls):
-    if "Config" in cls.__dict__:
-        defaults = {
+def get_defaults(cls: Directory):
+    defaults = {}
+
+    default_Config = namespacify(get_defaults_from_Config(cls))
+    default_init = namespacify(get_defaults_from_init(cls))
+
+    if default_Config.is_disjoint(default_init):
+        defaults.update(default_Config)
+        defaults.update(default_init)
+    elif default_Config.is_superset(default_init):
+        defaults.update(default_Config)
+    elif default_init.is_superset(default_Config):
+        defaults.update(default_init)
+    else:
+        raise ValueError
+    defaults = namespacify(defaults)
+    return defaults
+
+
+def get_defaults_from_Config(cls: Directory):
+    if "Config" in type(cls).__dict__:
+        return {
             k: v
             for k, v in cls.Config.__dict__.items()
             if not (k.startswith("_") or (k.startswith("__") and k.endswith("__")))
         }
-        return Namespace(defaults)
-    return Namespace({})
+    return {}
 
 
-def get_annotations(cls):
-    if "Config" in cls.__dict__:
+def get_defaults_from_init(cls: Directory):
+    signature = inspect.signature(type(cls).__init__)
+    defaults = {
+        k: v.default
+        for k, v in signature.parameters.items()
+        if v.default != inspect._empty
+    }
+    return defaults
+
+
+def get_annotations(cls: Directory):
+    if "Config" in type(cls).__dict__:
         annotations = getattr(cls.Config, "__annotations__", {})
         return Namespace(annotations)
     return Namespace({})
@@ -903,30 +957,13 @@ def _parse_directory_args(
         )
 
 
-def _implements_init(cls: type) -> bool:
+def _implements_init(cls: Directory) -> bool:
     """True if the class implements `__init__`."""
     return inspect.getsource(cls.__init__).split("\n")[-2].replace(" ", "") != "pass"
 
 
-def has_defaults_for_init(cls):
-    """Directory subclasses that specify
-
-    class Config:
-        foo = 1
-        bar = 2
-
-    and are constructed without arguments will be initialized with
-    `foo=1` and `bar=2`.
-    """
-    return (
-        "Config" in cls.__class__.__dict__
-        # and len(inspect.signature(cls.__init__).parameters) == 1
-        and get_defaults(cls.__class__)
-    )
-
-
 def _check_implementation(cls):
-    defaults = get_defaults(cls.__class__)
+    defaults = get_defaults(cls)
 
     if not defaults:
         # check if Config only has annotations, no defaults
@@ -953,7 +990,7 @@ def _directory(cls: type) -> Directory:
     return directory
 
 
-def _directory_from_path(cls: type, path: Path) -> Directory:
+def _directory_from_path(cls: Directory, path: Path) -> Directory:
     """
     Return a Directory corresponding to the file tree at `path`.
 
@@ -961,12 +998,12 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
     subtype of `cls`.
     """
 
-    def _has_defaults_for_init(cls):
-        """True if cls implements Config and __init__(self, config)"""
-        return (
-            "Config" in cls.__dict__
-            and len(inspect.signature(cls.__init__).parameters) == 2
-        )
+    # def _has_defaults_for_init(cls):
+    #     """True if cls implements Config and __init__(self, config)"""
+    #     return (
+    #         "Config" in cls.__dict__
+    #         and len(inspect.signature(cls.__init__).parameters) == 2
+    #     )
 
     config = read_meta(path).config or {}
     written_type = get_scope().get(config.get("type", None), None)
@@ -976,14 +1013,12 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
 
     # if context.enforce_config_match:
 
-    # if directory is constructed from path that does not exist,
-    # but that does implement an init function method and has no defaults
-    # for the config, raise an error
-    if _implements_init(cls) and not _has_defaults_for_init(cls) and not path.is_dir():
-        raise FileNotFoundError(f"{path} does not exist.")
-
-    # otherwise pass which is important for the case where the directory
-    # is constructed from a path that does not exist
+    if not path.is_dir():
+        if _implements_init(cls) and not get_defaults(cls):
+            raise FileNotFoundError(
+                f"cannot initialize {path}. It does not yet exist"
+                f" and no config was provided to initialize it."
+            )
     else:
         pass
 
@@ -1003,7 +1038,7 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
     return directory
 
 
-def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
+def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Directory:
     """
     Find or build a Directory with the given type and Namespace.
     """
@@ -1014,8 +1049,11 @@ def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
 
     def _new_directory():
         object.__setattr__(directory, "path", new_dir_path)
-        # return empty path cause only the type field is populated
+        # don't build cause only the type field is populated
         if list(config.keys()) == ["type"]:
+            return directory
+        # don't build cause the config matches the defaults and init is not implemented
+        if not _implements_init(cls) and config.without("type") == get_defaults(cls):
             return directory
         # catches FileExistsError for the case when two processes try to
         # build the same directory simultaneously
@@ -1063,7 +1101,7 @@ def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
 
 
 def _directory_from_path_and_config(
-    cls: type, path: Path, conf: Mapping[str, object]
+    cls: Directory, path: Path, conf: Mapping[str, object]
 ) -> Directory:
     """
     Find or build a Directory with the given type, path, and Namespace.
@@ -1098,6 +1136,14 @@ def _directory_from_path_and_config(
         if directory.meta.status == "stopped":
             raise FileExistsError(f'"{directory.path}" was stopped mid-build.')
     else:
+        # don't build cause only the type field is populated
+        if list(directory._config.keys()) == ["type"]:
+            return directory
+        # don't build cause the config matches the defaults and init is not implemented
+        if not _implements_init(cls) and directory._config.without(
+            "type"
+        ) == get_defaults(cls):
+            return directory
         # catches FileExistsError for the case when two processes try to
         # build the same directory simultaneously
         try:
@@ -1132,8 +1178,22 @@ def _build(directory: Directory) -> None:
     try:
         if callable(getattr(type(directory), "__init__", None)):
             n_build_args = directory.__init__.__code__.co_argcount
-            build_args = [directory._config] if n_build_args > 1 else []
-            directory.__init__(*build_args)
+            # case 1: __init__(self)
+            if n_build_args <= 1:
+                build_args = []
+                build_kwargs = {}
+            # case 2: __init__(self, config)
+            elif n_build_args == 2:
+                build_args = [directory._config]
+                build_kwargs = {}
+            # case 3: __init__(self, foo=1, bar=2) to specify defaults and config
+            else:
+                kwargs = namespacify(get_defaults_from_init(directory))
+                assert kwargs
+                build_args = []
+                build_kwargs = {k: directory._config[k] for k in kwargs}
+            directory.__init__(*build_args, **build_kwargs)
+
         write_meta(config=config, status="done")
     except BaseException as e:
         write_meta(config=config, status="stopped")
@@ -1141,9 +1201,9 @@ def _build(directory: Directory) -> None:
 
 
 def _update_doc(cls):
-    if "Config" not in cls.__class__.__dict__ or not get_defaults(cls.__class__):
-        return cls.__doc__
-    Config = cls.__class__.__dict__["Config"]
+    if "Config" not in type(cls).__dict__:
+        return
+    Config = type(cls).__dict__["Config"]
 
     def clsstrip(string):
         string = string[string.find("'") + 1 : string.rfind("'")]
@@ -1169,7 +1229,7 @@ def _update_doc(cls):
                 attributes += f"{k} = {v},\n"
 
     name = clsstrip(repr(Config)).replace(".Config", "")
-    return doc.format(name, attributes)
+    cls.__doc__ = doc.format(name, attributes)
 
 
 def _resolve_path(path: Path) -> Path:
