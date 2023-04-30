@@ -2,8 +2,6 @@
 A data organization and compilation system.
 """
 
-__version__ = "0.1"
-
 from datamate.directory import (
     Directory,
     ArrayFile,
@@ -26,3 +24,12 @@ __all__ = ["ArrayFile", "Directory", "Namespace"]
 Directory.__module__ = __name__
 ArrayFile.__module__ = __name__
 Namespace.__module__ = __name__
+
+
+def get_version():
+    from pathlib import Path
+    root = Path(__file__).parent
+    return open(root / "version", "r").read().strip()
+
+
+__version__ = get_version()

@@ -3,9 +3,17 @@ from setuptools import setup, find_packages
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
+
+def get_version():
+    from pathlib import Path
+
+    root = Path(__file__).parent
+    return open(root / "datamate/version", "r").read().strip()
+
+
 setup(
     name="datamate",
-    version="0.1.5",
+    version=get_version(),
     packages=find_packages(),
     install_requires=[
         "pandas",
