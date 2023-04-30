@@ -68,6 +68,10 @@ class ImplementationWarning(Warning):
     pass
 
 
+class ImplementationError(Exception):
+    pass
+
+
 # -- Static type definitions ---------------------------------------------------
 
 
@@ -349,9 +353,12 @@ class Directory(metaclass=NonExistingDirectory):
 
     def __new__(cls, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
-        if path is None and config is None:
-            cls = _directory(cls)
-        elif path is not None and config is None:
+        cls = _directory(cls)
+        _check_implementation(cls)
+        if config is None and has_defaults_for_init(cls) and _implements_init(cls):
+            config = get_defaults(cls)
+        # breakpoint()
+        if path is not None and config is None:
             cls = _check_size(_directory_from_path(cls, _resolve_path(path)))
         elif path is None and config is not None:
             cls = _check_size(_directory_from_config(cls, config))
@@ -359,10 +366,10 @@ class Directory(metaclass=NonExistingDirectory):
             cls = _check_size(
                 _directory_from_path_and_config(cls, _resolve_path(path), config)
             )
-
-        _check_implementation(cls)
-        if has_defaults_for_init(cls):
-            _build(cls)
+        elif path is None and config is None:
+            if _implements_init(cls):
+                # raise ValueError("no configuration provided")
+                pass
 
         cls.__doc__ = _update_doc(cls)
 
@@ -381,7 +388,7 @@ class Directory(metaclass=NonExistingDirectory):
 
     @property
     def config(self):
-        return self.meta.config
+        return self.meta.config or self._config
 
     @property
     def status(self):
@@ -814,6 +821,13 @@ def get_defaults(cls):
     return Namespace({})
 
 
+def get_annotations(cls):
+    if "Config" in cls.__dict__:
+        annotations = getattr(cls.Config, "__annotations__", {})
+        return Namespace(annotations)
+    return Namespace({})
+
+
 def _parse_directory_args(
     args: Tuple[object, ...], kwargs: Mapping[str, object]
 ) -> Tuple[Optional[Path], Optional[Mapping[str, object]]]:
@@ -889,17 +903,6 @@ def _parse_directory_args(
         )
 
 
-def _directory(cls: type) -> Directory:
-    """
-    Return a new Directory corresponding to the file tree at root_dir / cls.__name___ *
-    """
-    directory = _forward_subclass(cls, {})
-    path = _new_directory_path(type(directory))
-    object.__setattr__(directory, "_cached_keys", set())
-    object.__setattr__(directory, "path", path)
-    return directory
-
-
 def _implements_init(cls: type) -> bool:
     """True if the class implements `__init__`."""
     return inspect.getsource(cls.__init__).split("\n")[-2].replace(" ", "") != "pass"
@@ -917,13 +920,18 @@ def has_defaults_for_init(cls):
     """
     return (
         "Config" in cls.__class__.__dict__
-        and len(inspect.signature(cls.__init__).parameters) == 1
+        # and len(inspect.signature(cls.__init__).parameters) == 1
         and get_defaults(cls.__class__)
     )
 
 
 def _check_implementation(cls):
     defaults = get_defaults(cls.__class__)
+
+    if not defaults:
+        # check if Config only has annotations, no defaults
+        defaults = get_annotations(cls.__class__)
+
     if _implements_init(cls) and not defaults:
         with warnings.catch_warnings():
             warnings.simplefilter("always")
@@ -932,6 +940,17 @@ def _check_implementation(cls):
                 ImplementationWarning,
                 stacklevel=2,
             )
+
+
+def _directory(cls: type) -> Directory:
+    """
+    Return a new Directory corresponding to the file tree at root_dir / cls.__name___ *
+    """
+    directory = _forward_subclass(cls, {})
+    path = _new_directory_path(type(directory))
+    object.__setattr__(directory, "_cached_keys", set())
+    object.__setattr__(directory, "path", path)
+    return directory
 
 
 def _directory_from_path(cls: type, path: Path) -> Directory:
@@ -955,27 +974,29 @@ def _directory_from_path(cls: type, path: Path) -> Directory:
     if path.is_file():
         raise FileExistsError(f"{path} is a file.")
 
-    if context.enforce_config_match:
-        # if directory is constructed from path that does not exist,
-        # but that does implement an init function method and has no defaults
-        # for the config, raise an error
-        if (
-            _implements_init(cls)
-            and not path.is_dir()
-            and not _has_defaults_for_init(cls)
-        ):
-            raise FileNotFoundError(f"{path} does not exist.")
+    # if context.enforce_config_match:
 
-        if written_type is not None and not issubclass(written_type, cls):
-            raise FileExistsError(
-                f"{path} is a {written_type.__module__}.{written_type.__qualname__}"
-                f", not a {cls.__module__}.{cls.__qualname__}."
-            )
+    # if directory is constructed from path that does not exist,
+    # but that does implement an init function method and has no defaults
+    # for the config, raise an error
+    if _implements_init(cls) and not _has_defaults_for_init(cls) and not path.is_dir():
+        raise FileNotFoundError(f"{path} does not exist.")
 
-    if context.enforce_config_match:
-        directory = _forward_subclass(cls, config)
+    # otherwise pass which is important for the case where the directory
+    # is constructed from a path that does not exist
     else:
-        directory = _forward_subclass(cls, {})
+        pass
+
+    if written_type is not None and not issubclass(written_type, type(cls)):
+        raise FileExistsError(
+            f"{path} is a {written_type.__module__}.{written_type.__qualname__}"
+            f", not a {cls.__module__}.{cls.__qualname__}."
+        )
+
+    # if context.enforce_config_match:
+    directory = _forward_subclass(type(cls), config)
+    # else:
+    #     directory = _forward_subclass(type(cls), {})
 
     object.__setattr__(directory, "_cached_keys", set())
     object.__setattr__(directory, "path", path)
@@ -986,7 +1007,7 @@ def _directory_from_config(cls: type, conf: Mapping[str, object]) -> Directory:
     """
     Find or build a Directory with the given type and Namespace.
     """
-    directory = _forward_subclass(cls, conf)
+    directory = _forward_subclass(type(cls), conf)
     new_dir_path = _new_directory_path(type(directory))
     object.__setattr__(directory, "_cached_keys", set())
     config = Namespace(**directory._config)
@@ -1047,7 +1068,7 @@ def _directory_from_path_and_config(
     """
     Find or build a Directory with the given type, path, and Namespace.
     """
-    directory = _forward_subclass(cls, conf)
+    directory = _forward_subclass(type(cls), conf)
     object.__setattr__(directory, "_cached_keys", set())
     object.__setattr__(directory, "path", path)
 
@@ -1232,14 +1253,14 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
         except KeyError as e:
             raise KeyError(
                 f'"{cls_override}" can\'t be resolved because it is not found'
-                + f" inside the scope of Directory subclasses. Typo?"
-                + " If this happens in the context of autoreload enabled in"
+                + f" inside the current scope of Directory subclasses."
+                + " If this happens unexpectedly with autoreload enabled in"
                 + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
                 + " as a workaround or restart the kernel"
                 + f" (background: https://github.com/ipython/ipython/issues/12399)."
             ) from e
 
-    # Construct and return a `Configurable` instance.
+    # Construct and return a Directory instance
     obj = object.__new__(cls)
     default_config = get_defaults(cls)
     default_config.update(config)
@@ -1296,7 +1317,9 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
         f = h5.File(path, libver="latest", mode="a")
     except BlockingIOError as e:
         print(e)
-        if "errno = 11" in str(e):  # 11 := Reource temporarily unavailable
+        if "errno = 11" in str(e) or "errno = 35" in str(
+            e
+        ):  # 11, 35 := Reource temporarily unavailable
             sleep(0.1)
             if retry < max_retries:
                 _extend_h5(path, val, retry + 1, max_retries)

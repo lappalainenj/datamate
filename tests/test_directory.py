@@ -19,6 +19,7 @@ from datamate.directory import (
     ModifiedWarning,
     ConfigWarning,
     ImplementationWarning,
+    ImplementationError,
 )
 
 # -- Helper functions ----------------------------------------------------------
@@ -338,6 +339,10 @@ def test_directory_deletion(tmp_path: Path) -> None:
 class CustomDirectory(Directory):
     n_calls = 0
 
+    class Config:
+        n_zeros: int
+        n_ones: int
+
     def __init__(self, conf) -> None:
         CustomDirectory.n_calls += 1
         self.zeros = np.zeros(conf.n_zeros)
@@ -345,20 +350,18 @@ class CustomDirectory(Directory):
 
 
 class AnotherDirectory(Directory):
-    n_calls = 0
-
     def __init__(self) -> None:
-        AnotherDirectory.n_calls += 1
+        AnotherDirectory.Config.n_calls += 1
 
 
 def test_construction_from_nothing(tmp_path: Path) -> None:
     # Setup
     set_root_dir(tmp_path)
-    AnotherDirectory.n_calls = 0
+    AnotherDirectory.Config.n_calls = 0
 
     # Case 1: (not exists)
     a0 = AnotherDirectory()
-    assert AnotherDirectory.n_calls == 0
+    assert AnotherDirectory.Config.n_calls == 0
 
     # Case 2: (exists, empty)
     path = a0.path
@@ -368,7 +371,7 @@ def test_construction_from_nothing(tmp_path: Path) -> None:
     # Case 3: (exists, non-empty)
     a0.__init__()
     a1 = AnotherDirectory()
-    assert AnotherDirectory.n_calls == 1
+    assert AnotherDirectory.Config.n_calls == 1
 
     # Cleanup
     set_root_dir(Path("."))
@@ -485,11 +488,17 @@ def test_modified_error(tmp_path: Path) -> None:
 
 
 class DirectoryWithUnaryBuild(Directory):
+    class Config:
+        prop: int
+
     def __init__(self) -> None:
         self.field = self.config.prop
 
 
 class DirectoryWithBinaryBuild(Directory):
+    class Config:
+        prop: int
+
     def __init__(self, conf) -> None:
         self.field = conf.prop
 
@@ -510,6 +519,11 @@ def rooted_dir(tmp_path_factory):
 
     @root(path)
     class RootedDirectory(Directory):
+        class Config:
+            start: int
+            stop: int
+            step: int
+
         def __init__(self, config) -> None:
             self.array = np.arange(config.start, config.stop, config.step)
 
@@ -566,42 +580,85 @@ class DefaultConfigDir(Directory):
         self.x = np.arange(config.x)
 
 
-class FakeDefaultConfigDir(Directory):
+class BadImplementation(Directory):
+    # Config has no attributes
     class Config:
         pass
 
+    # but has init
     def __init__(self, config) -> None:
         self.x = np.arange(config.x)
 
 
 def test_default_config(tmp_path):
     set_root_dir(tmp_path)
+
+    # from default config
     dir = DefaultConfigDir()
     assert isinstance(dir, DefaultConfigDir)
     assert (dir.x[()] == np.arange(2)).all()
     assert dir.path.parent == tmp_path
+    _first = dir.path.name
+    assert "DefaultConfigDir" in _first
+
+    # again
+    dir = DefaultConfigDir()
+    assert isinstance(dir, DefaultConfigDir)
+    assert (dir.x[()] == np.arange(2)).all()
+    assert dir.path.parent == tmp_path
+    assert _first == dir.path.name
+
+    # from custom config
+    dir = DefaultConfigDir(x=3)
+    assert isinstance(dir, DefaultConfigDir)
+    assert (dir.x[()] == np.arange(3)).all()
+    assert dir.path.parent == tmp_path
     assert "DefaultConfigDir" in dir.path.name
+    assert _first != dir.path.name
 
-    dir = DefaultConfigDir("test")
+    # with path from default config
+    dir = DefaultConfigDir(tmp_path / "test3")
     assert isinstance(dir, DefaultConfigDir)
     assert (dir.x[()] == np.arange(2)).all()
     assert dir.path.parent == tmp_path
-    assert "test" == dir.path.name
+    assert "test3" == dir.path.name
 
-    dir = DefaultConfigDir(tmp_path / "test2")
+    # with path and custom config
+    dir = DefaultConfigDir(tmp_path / "test4", dict(x=3))
     assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(2)).all()
+    assert (dir.x[()] == np.arange(3)).all()
     assert dir.path.parent == tmp_path
-    assert "test2" == dir.path.name
+    assert "test4" == dir.path.name
+
+    # with name/ path from custom config but directory exists
+    with pytest.raises(FileExistsError):
+        dir = DefaultConfigDir(tmp_path / "test3", dict(x=3))
+
+    # bad implementation warning
+    with pytest.warns(ImplementationWarning):
+        dir = BadImplementation()
 
     with pytest.warns(ImplementationWarning):
-        FakeDefaultConfigDir()
+        with pytest.raises(FileNotFoundError):
+            dir = BadImplementation(tmp_path / "test8")
+
+    # config has no default attributes but directory has init, with custom config
+    with pytest.warns(ImplementationWarning):
+        dir = BadImplementation(dict(x=2))
+        assert (dir.x[()] == np.arange(2)).all()
 
     with pytest.warns(ImplementationWarning):
-        FakeDefaultConfigDir("fake_test")
+        dir = BadImplementation(tmp_path / "test10", dict(x=2))
+        assert (dir.x[()] == np.arange(2)).all()
 
-    with pytest.warns(ImplementationWarning):
-        FakeDefaultConfigDir(tmp_path / "fake_test2")
+    # config has no default attributes but directory has init, with custom, wrong config
+    with pytest.raises(AttributeError):
+        with pytest.warns(ImplementationWarning):
+            dir = BadImplementation(dict(y=2))
+
+    with pytest.raises(AttributeError):
+        with pytest.warns(ImplementationWarning):
+            dir = BadImplementation(tmp_path / "test12", dict(y=2))
 
 
 # -- test auto docstring
