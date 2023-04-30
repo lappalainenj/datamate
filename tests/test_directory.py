@@ -660,6 +660,17 @@ def test_default_config(tmp_path):
         with pytest.warns(ImplementationWarning):
             dir = BadImplementation(tmp_path / "test12", dict(y=2))
 
+    # again
+    dir = DefaultConfigDir(x=4)
+    assert dir._config == Namespace(type="DefaultConfigDir", x=4)
+    assert dir.config == Namespace(type="DefaultConfigDir", x=4)
+    assert (dir.x[()] == np.arange(4)).all()
+
+    dir = DefaultConfigDir(dir.path.name)
+    assert dir._config == Namespace(type="DefaultConfigDir", x=4)
+    assert dir.config == Namespace(type="DefaultConfigDir", x=4)
+    assert (dir.x[()] == np.arange(4)).all()
+
 
 # -- test auto docstring
 
@@ -722,3 +733,95 @@ def test_auto_doc(tmp_path):
     d = NoConfigDocDir()
     doc = "Dir to test auto docstring based on config."
     assert d.__doc__ == doc
+
+
+# --- test default config and init from init kwargs
+
+
+class SmartDir(Directory):
+    def __init__(self, foo=2, bar=3):
+        self.foo = foo
+        self.bar = bar
+
+
+def test_init_from_kwargs(tmp_path):
+    set_root_dir(tmp_path)
+    dir = SmartDir()
+    assert dir._config == Namespace(type="SmartDir", foo=2, bar=3)
+    assert dir.config == Namespace(type="SmartDir", foo=2, bar=3)
+    assert dir.path.parent == tmp_path
+    assert dir.foo[()] == 2
+    assert dir.bar[()] == 3
+
+    dir = SmartDir(foo=5, bar=1)
+    assert dir._config == Namespace(type="SmartDir", foo=5, bar=1)
+    assert dir.config == Namespace(type="SmartDir", foo=5, bar=1)
+    assert dir.path.parent == tmp_path
+    assert dir.foo[()] == 5
+    assert dir.bar[()] == 1
+
+    dir = SmartDir(dir.path.name)
+    assert dir._config == Namespace(type="SmartDir", foo=5, bar=1)
+    assert dir.config == Namespace(type="SmartDir", foo=5, bar=1)
+    assert dir.path.parent == tmp_path
+    assert dir.foo[()] == 5
+    assert dir.bar[()] == 1
+
+    with pytest.raises(FileExistsError):
+        dir = SmartDir(dir.path.name, foo=3, bar=2)
+
+
+# --- test directory with Config but without init
+
+
+class NetworkDir(Directory):
+    class Config:
+        tau: float = 200.0
+        sigma: float = 0.1
+
+    def train(self):
+        del self.loss
+        for i in range(self.config.N):
+            self.extend(
+                "loss",
+                [np.exp(-i / self.config.tau) + np.random.rand() * self.config.sigma],
+            )
+
+
+def test_directory_with_config_without_init(tmp_path):
+    set_root_dir(tmp_path)
+
+    nnd = NetworkDir()
+    assert not nnd.path.exists()
+
+    nnd = NetworkDir(tmp_path / "test")
+    assert not nnd.path.exists()
+
+
+# --- test cross forms of Config and init defaults
+
+
+class ConIni1(Directory):
+    class Config:
+        sigma: float = 0.1
+
+    def __init__(self, tau=200):
+        pass
+
+
+class ConIni2(Directory):
+    class Config:
+        tau: float = 200.0
+        sigma: float = 0.1
+
+    def __init__(self, sigma=2):
+        pass
+
+
+def test_cross_configs(tmp_path):
+    dir = ConIni1()
+    assert not dir.path.exists()
+    assert dir.config == Namespace(type="ConIni1", tau=200.0, sigma=0.1)
+
+    with pytest.raises(ValueError):
+        dir = ConIni2()
