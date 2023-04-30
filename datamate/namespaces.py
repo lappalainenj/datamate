@@ -99,32 +99,38 @@ class Namespace(Dict[str, Any]):
         _copy.pop(key)
         return _copy
 
-    def is_superset(self, superset):
-        _keys_subset = set(self)
-        _keys_superset = set(superset)
-        return _keys_subset.issubset(_keys_superset)
+    def is_superset(self, other):
+        return is_subset(self, other)
 
-    def is_value_matching_superset(self, subset):
+    def is_subset(self, other):
         """
-        Args:
-            self (dict): potential superset
-            subset (dict): potential subset
+        Check whether dict2 is a subset of dict1.
 
-        Returns: True if subset is a subset of superset
-            and all values match.
+        Parameters:
+        dict1 (dict): The superset dictionary.
+        dict2 (dict): The subset dictionary.
+
+        Returns:
+        bool: True if dict2 is a subset of dict1, False otherwise.
         """
-        # namespacify for type coercion from array to list
-        self = namespacify(self)
-        subset = namespacify(subset)
-        _keys_superset = set(self)
-        _keys_subset = set(subset)
-        _keys_are_superset = _keys_superset.issuperset(_keys_subset)
-        _values_are_matching = all(
-            self[key] == subset[key]
-            for key in _keys_superset.intersection(_keys_subset)
-        )
+        return is_subset(other, self)
 
-        return _keys_are_superset & _values_are_matching
+    def is_disjoint(self, other_dict):
+        """
+        Check whether another dictionary is disjoint with respect to this one.
+
+        Two dictionaries are considered disjoint if they have no common keys.
+
+        Parameters:
+        other_dict (dict): The other dictionary to check for disjointness.
+
+        Returns:
+        bool: True if the other dictionary is disjoint with respect to this one,
+              False otherwise.
+        """
+        self_keys = set(key for key, _ in self.walk())
+        other_keys = set(key for key, _ in dict_walk(other_dict))
+        return self_keys.isdisjoint(other_keys)
 
     def to_df(self, name="", seperator="."):
         """Dict to flattened dataframe."""
@@ -175,20 +181,15 @@ class Namespace(Dict[str, Any]):
         _diff(_self, other)
         return namespacify(diff)
 
-    def walk(self, _parents=tuple()):
-        """Walks a dictionary, like os.walk(dir)."""
-        _childs = tuple()
-        _values = tuple()
-        for key, value in self.items():
-            parents = _parents + (key,)
-            childs = (
-                _childs + tuple(value.keys()) if isinstance(value, dict) else _childs
-            )
-            values = _values if isinstance(value, dict) else _values + (value,)
-            yield parents, childs, values
+    def walk(self):
+        """
+        Recursively walk through the dictionary and yield a tuple for each
+        key-value pair.
 
-            if isinstance(value, dict):
-                yield from self.walk(value, _parents=parents)
+        Yields:
+        tuple: A tuple containing the current key and its corresponding value.
+        """
+        yield from dict_walk(self)
 
     def equal_values(self, other):
         "Comparison of values, nested."
@@ -214,7 +215,7 @@ class Namespace(Dict[str, Any]):
         return all_true(self)
 
 
-def namespacify(obj: object) -> object:
+def namespacify(obj: object) -> Namespace:
     """
     Recursively convert mappings (item access only) and ad-hoc Namespaces
     (attribute access only) to `Namespace`s (both item and element access).
@@ -234,6 +235,29 @@ def namespacify(obj: object) -> object:
             return namespacify(vars(obj))
         except TypeError as e:
             raise TypeError(f"namespacifying {obj} of type {type(obj)}: {e}.") from e
+
+
+def is_subset(dict1, dict2):
+    """
+    Check whether dict2 is a subset of dict1.
+
+    Parameters:
+    dict1 (dict): The superset dictionary.
+    dict2 (dict): The subset dictionary.
+
+    Returns:
+    bool: True if dict2 is a subset of dict1, False otherwise.
+    """
+    for key, value in dict2.items():
+        if key not in dict1:
+            return False
+        if isinstance(value, dict):
+            if not is_subset(dict1[key], value):
+                return False
+        else:
+            if dict1[key] != value:
+                return False
+    return True
 
 
 def to_dict(cls):
@@ -310,3 +334,20 @@ def all_true(obj: object) -> bool:
             return all_true(vars(obj))
         except TypeError as e:
             raise TypeError(f"all {obj} of type {type(obj)}: {e}.") from e
+
+
+def dict_walk(dictionary):
+    """
+    Recursively walk through a nested dictionary and yield a tuple
+    for each key-value pair.
+
+    Parameters:
+    dictionary (dict): The dictionary to walk through.
+
+    Yields:
+    tuple: A tuple containing the current key and its corresponding value.
+    """
+    for key, value in dictionary.items():
+        yield (key, value)
+        if isinstance(value, dict):
+            yield from dict_walk(value)
