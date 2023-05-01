@@ -6,21 +6,22 @@ It also exports`namespacify`, a function that recursively converts mappings and
 Namespace-like containers in JSON-like objects to `Namespace`s.
 """
 
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, get_origin
 from copy import copy, deepcopy
 from numpy import ndarray
 from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["Namespace", "namespacify"]
+__all__ = ["Namespace", "namespacify", "is_disjoint", "is_subset", "is_superset"]
 
 # -- Namespaces ----------------------------------------------------------------
 
 
 class Namespace(Dict[str, Any]):
     """
-    A `dict` that supports accessing items as attributes
+    A `dict` that supports accessing items as attributes and comparison methods
+    between multiple `Namespace`s.
     """
 
     def __dir__(self) -> List[str]:
@@ -113,7 +114,7 @@ class Namespace(Dict[str, Any]):
         Returns:
         bool: True if dict2 is a subset of dict1, False otherwise.
         """
-        return is_subset(other, self)
+        return is_superset(other, self)
 
     def is_disjoint(self, other_dict):
         """
@@ -128,9 +129,7 @@ class Namespace(Dict[str, Any]):
         bool: True if the other dictionary is disjoint with respect to this one,
               False otherwise.
         """
-        self_keys = set(key for key, _ in self.walk())
-        other_keys = set(key for key, _ in dict_walk(other_dict))
-        return self_keys.isdisjoint(other_keys)
+        return is_disjoint(self, other_dict)
 
     def to_df(self, name="", seperator="."):
         """Dict to flattened dataframe."""
@@ -203,7 +202,10 @@ class Namespace(Dict[str, Any]):
         return deepcopy(self)
 
     def to_dict(self):
-        return to_dict(self)
+        return dict(
+            (k, to_dict(v) if isinstance(v, dict) or isinstance(v, Namespace) else v)
+            for k, v in self.items()
+        )
 
     def depth(self):
         return depth(self)
@@ -230,6 +232,8 @@ def namespacify(obj: object) -> Namespace:
         return [namespacify(v.item()) for v in obj]
     elif isinstance(obj, Mapping):
         return Namespace({k: namespacify(obj[k]) for k in obj})
+    elif get_origin(obj) is not None:
+        return obj
     else:
         try:
             return namespacify(vars(obj))
@@ -260,16 +264,34 @@ def is_subset(dict1, dict2):
     return True
 
 
-def to_dict(cls):
+def is_superset(dict1, dict2):
     """
-    Recursively converts a Namespace to a dictionary.
+    Check whether dict2 is a superset of dict1.
+
+    Parameters:
+    dict1 (dict): The subset dictionary.
+    dict2 (dict): The superset dictionary.
+
+    Returns:
+    bool: True if dict2 is a superset of dict1, False otherwise.
     """
-    if isinstance(cls, Namespace):
-        return {k: to_dict(v) for k, v in cls.__dict__.items()}
-    elif isinstance(cls, (list, tuple)):
-        return type(cls)(to_dict(v) for v in cls)
+    return is_subset(dict2, dict1)
+
+
+def is_disjoint(dict1, dict2):
+    """Check whether two dictionaries are disjoint."""
+    dict1_keys = set(key for key, _ in dict_walk(dict1))
+    dict2_keys = set(key for key, _ in dict_walk(dict2))
+    return dict1_keys.isdisjoint(dict2_keys)
+
+
+def to_dict(obj):
+    if isinstance(obj, dict):
+        return dict((k, to_dict(v)) for k, v in obj.items())
+    elif isinstance(obj, Namespace):
+        return obj.to_dict()
     else:
-        return cls
+        return obj
 
 
 def depth(cls):

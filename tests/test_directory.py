@@ -20,6 +20,7 @@ from datamate.directory import (
     ConfigWarning,
     ImplementationWarning,
     ImplementationError,
+    _auto_doc
 )
 
 # -- Helper functions ----------------------------------------------------------
@@ -46,6 +47,10 @@ def assert_directory_equals(directory: Directory, target: dict) -> None:
         assert directory._config == target.pop("__conf__")
     if "__meta__" in target:
         assert directory.meta == target.pop("__meta__")
+    if "__doc__" in target:
+        assert directory.__doc__ == target.pop("__doc__")
+    if "__exists__" in target:
+        assert directory.path.exists() == target.pop("__exists__")
 
     assert len(directory) == len(target)
     assert len(list(directory)) == len(target)
@@ -537,17 +542,38 @@ def test_root_dir_provided(tmp_path, rooted_dir):
 
     # case 1: root dir provided in decorator
     dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
-    assert dir.path.parent == rooted_dir_root_path
+    assert_directory_equals(
+            dir,
+            dict(
+                __type__=RootedDirectory,
+                __path__= rooted_dir_root_path / dir.path.name,
+                array=np.arange(0, 10, 1),
+            ),
+        )
 
     # case 2: root dir provided and not within context
     set_root_dir(tmp_path)
     dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
-    assert dir.path.parent == rooted_dir_root_path
+    assert_directory_equals(
+            dir,
+            dict(
+                __type__=RootedDirectory,
+                __path__= rooted_dir_root_path / dir.path.name,
+                array=np.arange(0, 10, 1),
+            ),
+        )
 
     # case 3: root_dir provided and within context
     with set_root_context(tmp_path):
         dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
-        assert dir.path.parent == tmp_path
+        assert_directory_equals(
+            dir,
+            dict(
+                __type__=RootedDirectory,
+                __path__= tmp_path / dir.path.name,
+                array=np.arange(0, 10, 1),
+            ),
+        )
 
 
 @root()
@@ -561,13 +587,25 @@ def test_root_dir_not_provided(tmp_path):
 
     # case 4: root dir not provided and not within context
     dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
-    assert dir.path.parent == tmp_path
-
+    assert_directory_equals(
+            dir,
+            dict(
+                __type__=RootedDirectory,
+                __path__= tmp_path / dir.path.name,
+                array=np.arange(0, 10, 1),
+            ),
+    )
     # case 5: root dir not provided and within context
     with set_root_context(tmp_path / "subdir"):
         dir = RootedDirectory(Namespace(start=0, stop=10, step=1))
-        assert dir.path.parent == tmp_path / "subdir"
-
+        assert_directory_equals(
+            dir,
+            dict(
+                __type__=RootedDirectory,
+                __path__= tmp_path / "subdir" / dir.path.name,
+                array=np.arange(0, 10, 1),
+            ),
+        )
 
 # -- test default config
 
@@ -595,40 +633,74 @@ def test_default_config(tmp_path):
 
     # from default config
     dir = DefaultConfigDir()
-    assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(2)).all()
-    assert dir.path.parent == tmp_path
-    _first = dir.path.name
-    assert "DefaultConfigDir" in _first
+    name = dir.path.name
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
 
     # again
     dir = DefaultConfigDir()
-    assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(2)).all()
-    assert dir.path.parent == tmp_path
-    assert _first == dir.path.name
+    assert name == dir.path.name
 
     # from custom config
     dir = DefaultConfigDir(x=3)
-    assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(3)).all()
-    assert dir.path.parent == tmp_path
-    assert "DefaultConfigDir" in dir.path.name
-    assert _first != dir.path.name
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / dir.path.name,
+            __conf__=Namespace(type="DefaultConfigDir", x=3),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 3}, "status": "done"},
+            x=np.arange(3),
+        ),
+    )
+    assert name != dir.path.name
+
+    # rereference
+    dir = DefaultConfigDir(dir.path.name)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / dir.path.name,
+            __conf__=Namespace(type="DefaultConfigDir", x=3),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 3}, "status": "done"},
+            x=np.arange(3),
+        ),
+    )
 
     # with path from default config
     dir = DefaultConfigDir(tmp_path / "test3")
-    assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(2)).all()
-    assert dir.path.parent == tmp_path
-    assert "test3" == dir.path.name
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / "test3",
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
 
     # with path and custom config
     dir = DefaultConfigDir(tmp_path / "test4", dict(x=3))
-    assert isinstance(dir, DefaultConfigDir)
-    assert (dir.x[()] == np.arange(3)).all()
-    assert dir.path.parent == tmp_path
-    assert "test4" == dir.path.name
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / "test4",
+            __conf__=Namespace(type="DefaultConfigDir", x=3),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 3}, "status": "done"},
+            x=np.arange(3),
+        ),
+    )
 
     # with name/ path from custom config but directory exists
     with pytest.raises(FileExistsError):
@@ -637,6 +709,15 @@ def test_default_config(tmp_path):
     # bad implementation warning
     with pytest.warns(ImplementationWarning):
         dir = BadImplementation()
+        assert_directory_equals(
+            dir,
+            dict(
+                __type__=BadImplementation,
+                __path__=tmp_path / dir.path.name,
+                __conf__=Namespace(type="BadImplementation"),
+                __meta__={"config": None, "status": "done"},
+            ),
+        )
 
     with pytest.warns(ImplementationWarning):
         with pytest.raises(FileNotFoundError):
@@ -645,11 +726,35 @@ def test_default_config(tmp_path):
     # config has no default attributes but directory has init, with custom config
     with pytest.warns(ImplementationWarning):
         dir = BadImplementation(dict(x=2))
-        assert (dir.x[()] == np.arange(2)).all()
+        assert_directory_equals(
+            dir,
+            dict(
+                __type__=BadImplementation,
+                __path__=tmp_path / dir.path.name,
+                __conf__=Namespace(type="BadImplementation", x=2),
+                __meta__={
+                    "config": {"type": "BadImplementation", "x": 2},
+                    "status": "done",
+                },
+                x=np.arange(2)
+            ),
+        )
 
     with pytest.warns(ImplementationWarning):
         dir = BadImplementation(tmp_path / "test10", dict(x=2))
-        assert (dir.x[()] == np.arange(2)).all()
+        assert_directory_equals(
+            dir,
+            dict(
+                __type__=BadImplementation,
+                __path__=tmp_path / "test10",
+                __conf__=Namespace(type="BadImplementation", x=2),
+                __meta__={
+                    "config": {"type": "BadImplementation", "x": 2},
+                    "status": "done",
+                },
+                x=np.arange(2)
+            ),
+        )
 
     # config has no default attributes but directory has init, with custom, wrong config
     with pytest.raises(AttributeError):
@@ -660,20 +765,8 @@ def test_default_config(tmp_path):
         with pytest.warns(ImplementationWarning):
             dir = BadImplementation(tmp_path / "test12", dict(y=2))
 
-    # again
-    dir = DefaultConfigDir(x=4)
-    assert dir._config == Namespace(type="DefaultConfigDir", x=4)
-    assert dir.config == Namespace(type="DefaultConfigDir", x=4)
-    assert (dir.x[()] == np.arange(4)).all()
-
-    dir = DefaultConfigDir(dir.path.name)
-    assert dir._config == Namespace(type="DefaultConfigDir", x=4)
-    assert dir.config == Namespace(type="DefaultConfigDir", x=4)
-    assert (dir.x[()] == np.arange(4)).all()
-
 
 # -- test auto docstring
-
 
 class AutoDocConfigDir(Directory):
     """Dir to test auto docstring based on config."""
@@ -684,6 +777,13 @@ class AutoDocConfigDir(Directory):
         q = Namespace(a=1, b=2)
 
 
+class AutoDocInitDir(Directory):
+    "Dir to test auto docstring based on config."
+
+    def __init__(self, x: int = 2, y: float = 2.0, q=Namespace(a=1, b=2)):
+        pass
+
+
 class SoloConfigDocDir(Directory):
     class Config:
         x: int = 2
@@ -691,10 +791,22 @@ class SoloConfigDocDir(Directory):
         q = Namespace(a=1, b=2)
 
 
+class SoloInitDocDir(Directory):
+    def __init__(self, x: int = 2, y: float = 2.0, q=Namespace(a=1, b=2)):
+        pass
+
+
 class EmptyConfigDocDir(Directory):
     """Dir to test auto docstring based on config."""
 
     class Config:
+        pass
+
+
+class EmptyInitDocDir(Directory):
+    """Dir to test auto docstring based on config."""
+
+    def __init__(self):
         pass
 
 
@@ -706,40 +818,76 @@ class NoConfigDocDir(Directory):
 
 def test_auto_doc(tmp_path):
     a = AutoDocConfigDir()
-
-    doc = "Dir to test auto docstring based on config."
-    doc += "\n\n"
-    doc += "Initialize from config or leave default:\n"
-    doc += "{}(dict(\n{}))"
-    doc = doc.format(
-        "test_directory.AutoDocConfigDir",
-        "x: int = 2,\ny: float = 2.0,\nq = Namespace(a=1, b=2),\n",
+    doc = "Dir to test auto docstring based on config.{}".format(_auto_doc(a, cls_doc=False))
+    # breakpoint()
+    assert_directory_equals(
+        a,
+        dict(
+            __doc__=doc,
+            __exists__=False,
+        ),
     )
-    assert a.__doc__ == doc
+
+    a1 = AutoDocInitDir()
+    assert_directory_equals(
+        a1,
+        dict(
+            __doc__=doc.replace("AutoDocConfigDir", "AutoDocInitDir"),
+            __exists__=False,
+        ),
+    )
 
     b = SoloConfigDocDir()
-    doc = "Initialize from config or leave default:\n"
-    doc += "{}(dict(\n{}))"
-    doc = doc.format(
-        "test_directory.SoloConfigDocDir",
-        "x: int = 2,\ny: float = 2.0,\nq = Namespace(a=1, b=2),\n",
+    doc = _auto_doc(b, cls_doc=False)
+    assert_directory_equals(
+        b,
+        dict(
+            __doc__=doc,
+            __exists__=False,
+        ),
     )
-    assert b.__doc__ == doc
+
+    b1 = SoloInitDocDir()
+    assert_directory_equals(
+        b1,
+        dict(
+            __doc__=doc.replace("SoloConfigDocDir", "SoloInitDocDir"),
+            __exists__=False,
+        ),
+    )
 
     c = EmptyConfigDocDir()
-    doc = "Dir to test auto docstring based on config."
-    assert c.__doc__ == doc
+    doc = "Dir to test auto docstring based on config.{}".format(_auto_doc(c, cls_doc=False))
+    assert_directory_equals(
+        c,
+        dict(
+            __doc__=doc,
+            __exists__=False,
+        ),
+    )
+
+    c1 = EmptyInitDocDir()
+    assert_directory_equals(
+        c1,
+        dict(
+            __doc__=doc,
+            __exists__=False,
+        ),
+    )
 
     d = NoConfigDocDir()
-    doc = "Dir to test auto docstring based on config."
-    assert d.__doc__ == doc
+    doc = "Dir to test auto docstring based on config.{}".format(_auto_doc(d, cls_doc=False))
+    assert_directory_equals(
+        d,
+        dict(__doc__=doc, __exists__=False),
+    )
 
 
 # --- test default config and init from init kwargs
 
 
 class SmartDir(Directory):
-    def __init__(self, foo: int=2, bar: int=3):
+    def __init__(self, foo: int = 2, bar: int = 3):
         self.foo = foo
         self.bar = bar
 
@@ -747,25 +895,41 @@ class SmartDir(Directory):
 def test_init_from_kwargs(tmp_path):
     set_root_dir(tmp_path)
     dir = SmartDir()
-    assert dir._config == Namespace(type="SmartDir", foo=2, bar=3)
-    assert dir.config == Namespace(type="SmartDir", foo=2, bar=3)
-    assert dir.path.parent == tmp_path
-    assert dir.foo[()] == 2
-    assert dir.bar[()] == 3
+    assert_directory_equals(
+            dir,
+            dict(
+                __path__=tmp_path / dir.path.name,
+                __conf__=Namespace(type="SmartDir", foo=2, bar=3),
+                __meta__={"config": {"type": "SmartDir", "foo": 2, "bar": 3}, "status": "done"},
+                foo=2,
+                bar=3
+            ),
+    )
 
     dir = SmartDir(foo=5, bar=1)
-    assert dir._config == Namespace(type="SmartDir", foo=5, bar=1)
-    assert dir.config == Namespace(type="SmartDir", foo=5, bar=1)
-    assert dir.path.parent == tmp_path
-    assert dir.foo[()] == 5
-    assert dir.bar[()] == 1
+    assert_directory_equals(
+            dir,
+            dict(
+                __path__=tmp_path / dir.path.name,
+                __conf__=Namespace(type="SmartDir", foo=5, bar=1),
+                __meta__={"config": {"type": "SmartDir", "foo": 5, "bar": 1}, "status": "done"},
+                foo=5,
+                bar=1
+            ),
+    )
+    name = dir.path.name
 
-    dir = SmartDir(dir.path.name)
-    assert dir._config == Namespace(type="SmartDir", foo=5, bar=1)
-    assert dir.config == Namespace(type="SmartDir", foo=5, bar=1)
-    assert dir.path.parent == tmp_path
-    assert dir.foo[()] == 5
-    assert dir.bar[()] == 1
+    dir = SmartDir(name)
+    assert_directory_equals(
+            dir,
+            dict(
+                __path__=tmp_path / name,
+                __conf__=Namespace(type="SmartDir", foo=5, bar=1),
+                __meta__={"config": {"type": "SmartDir", "foo": 5, "bar": 1}, "status": "done"},
+                foo=5,
+                bar=1
+            ),
+    )
 
     with pytest.raises(FileExistsError):
         dir = SmartDir(dir.path.name, foo=3, bar=2)
@@ -792,13 +956,26 @@ def test_directory_with_config_without_init(tmp_path):
     set_root_dir(tmp_path)
 
     nnd = NetworkDir()
-    assert not nnd.path.exists()
+    assert_directory_equals(
+            nnd,
+            dict(
+                __conf__=Namespace(type="NetworkDir", tau=200.0, sigma=0.1),
+                __exists__=False,
+            ),
+    )
 
     nnd = NetworkDir(tmp_path / "test")
-    assert not nnd.path.exists()
+    assert_directory_equals(
+            nnd,
+            dict(
+                __path__=tmp_path / "test",
+                __conf__=Namespace(type="NetworkDir", tau=200.0, sigma=0.1),
+                __exists__=False,
+            ),
+    )
 
 
-# --- test cross forms of Config and init defaults
+# --- test merge of defaults
 
 
 class ConIni1(Directory):
@@ -809,19 +986,21 @@ class ConIni1(Directory):
         pass
 
 
-class ConIni2(Directory):
-    class Config:
-        tau: float = 200.0
-        sigma: float = 0.1
-
-    def __init__(self, sigma=2):
-        pass
-
-
 def test_cross_configs(tmp_path):
     dir = ConIni1()
-    assert not dir.path.exists()
-    assert dir.config == Namespace(type="ConIni1", tau=200.0, sigma=0.1)
+    assert_directory_equals(
+            dir,
+            dict(
+                __conf__=Namespace(type="ConIni1", tau=200.0, sigma=0.1),
+                __exists__=False,
+            ),
+    )
 
     with pytest.raises(ValueError):
-        dir = ConIni2()
+        class ConIni2(Directory):
+            class Config:
+                tau: float = 200.0
+                sigma: float = 0.1
+
+            def __init__(self, sigma=2):
+                pass

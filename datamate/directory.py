@@ -3,8 +3,7 @@ This module exports the `Directory` class, an array- and metadata-friendly view
 into a directory.
 
 Instances of the base Directory class have methods to simplify reading/writing
-collections of arrays. `Directory` can also be subclassed to define Configurable,
-persistent computed asset types, within Python/PEP 484's type system.
+collections of arrays.
 
 This module also exports `ArrayFile` a descriptor protocol intended to be used
 as attribute type annotations within `Directory` subclass definition.
@@ -31,6 +30,7 @@ from typing import (
     Dict,
     Union,
     cast,
+    get_origin
 )
 from typing_extensions import Protocol
 import datetime
@@ -42,10 +42,8 @@ from contextlib import contextmanager
 import h5py as h5
 import numpy as np
 from pandas import DataFrame
-from ruamel import yaml
-from toolz import valmap
 
-from datamate.namespaces import Namespace, namespacify
+from datamate.namespaces import Namespace, namespacify, is_disjoint, is_superset, to_dict
 
 __all__ = ["Directory", "ArrayFile"]
 
@@ -137,27 +135,50 @@ def root(root_dir: Union[str, Path, NoneType] = None):
     """
 
     def decorator(callable):
-        @functools.wraps(callable)
-        def function(*args, **kwargs):
-            _root_dir = get_root_dir()
-            within_context = getattr(context, "within_root_context", False)
-            # case 1: root_dir provided
-            if root_dir is not None and not within_context:
-                set_root_dir(root_dir)
-            # case 2: root_dir provided and not within context
-            # case 3: root_dir provided and within context
-            # case 4: root dir not provided and not within context
-            # case 5: root dir not provided and within context
-            else:
+        if inspect.isfunction(callable):
+            @functools.wraps(callable)
+            def function(*args, **kwargs):
+                _root_dir = get_root_dir()
+                within_context = getattr(context, "within_root_context", False)
+                # case 1: root_dir provided
+                if root_dir is not None and not within_context:
+                    set_root_dir(root_dir)
+                # case 2: root_dir provided and not within context
+                # case 3: root_dir provided and within context
+                # case 4: root dir not provided and not within context
+                # case 5: root dir not provided and within context
+                else:
+                    set_root_dir(_root_dir)
+                _return = callable(*args, **kwargs)
                 set_root_dir(_root_dir)
-            _return = callable(*args, **kwargs)
-            set_root_dir(_root_dir)
-            return _return
+                return _return
+            return function
+        elif inspect.isclass(callable):
+            new = callable.__new__
 
-        return function
+            @functools.wraps(callable)
+            def function(*args, **kwargs):
+                _root_dir = get_root_dir()
+                within_context = getattr(context, "within_root_context", False)
+                # case 1: root_dir provided
+                if root_dir is not None and not within_context:
+                    set_root_dir(root_dir)
+                # case 2: root_dir provided and not within context
+                # case 3: root_dir provided and within context
+                # case 4: root dir not provided and not within context
+                # case 5: root dir not provided and within context
+                else:
+                    set_root_dir(_root_dir)
+                _return = new(*args, **kwargs)
+                set_root_dir(_root_dir)
+                return _return
 
+            callable.__new__ = function
+
+            return callable
+        else:
+            raise ValueError
     return decorator
-
 
 @contextmanager
 def set_root_context(root_dir: Union[str, Path, NoneType] = None):
@@ -204,6 +225,10 @@ def check_size_on_init(enforce: bool) -> None:
     context.check_size_on_init = enforce
 
 
+def get_check_size_on_init() -> bool:
+    return context.check_size_on_init
+
+
 def set_verbosity_level(level: int) -> None:
     """
     Set verbosity level of representation for Directorys.
@@ -215,10 +240,6 @@ def set_verbosity_level(level: int) -> None:
     Defaults to 2.
     """
     context.verbosity_level = level
-
-
-def get_check_size_on_init() -> bool:
-    return context.check_size_on_init
 
 
 def set_scope(scope: Optional[Dict[str, type]]) -> None:
@@ -275,45 +296,49 @@ class Directory(metaclass=NonExistingDirectory):
     An array- and metadata-friendly view into a directory
 
     Arguments:
-        path (Path|str): The path at which the Directory is, or should be,
-            stored
-        conf (Mapping[str, object]): The build Namespace, optionally
-            including a "type" field indicating the type of Directory to search
-            for/construct
+        path Union[str, Path]: The path at which the Directory is, or should be,
+            stored, can be relative to the current `root_dir`.
+        config Dict[str, object]: The configuration of the Directory.
+            When including a "type" field indicates the type of Directory to
+            search for and construct in the scope. Note, the config can be
+            unpacked into the constructor as keyword arguments.
 
     Constructors:
-         - Directory(name: str)\n'
-         - Directory(name: str, conf: Mapping[str, object])'
-         - Directory(conf: Mapping[str, object])\n'
-         - Directory(path: Path|str)\n'
-         - Directory(path: Path|str, conf: Mapping[str, object])\n'
+         - Directory(): creates auto-named Directory inside the current
+            `root_dir`.
+         - Directory(config: Dict[str, object]): creates auto-named Directory inside
+            the current `root_dir` with the given config. If __init__ is
+            implemented, it will be called with the config as keyword arguments.
+         - Directory(path: Union[str, Path]): creates named Directory inside the
+             current `root_dir`. `path` will be either relative to the current
+                `root_dir` or absolute.
+         - Directory(path: Union[str, Path], config: Dict[str, object]): creates
+            named Directory inside the
+             current `root_dir`. `path` will be either relative to the current
+                `root_dir` or absolute. If __init__ is
+            implemented, it will be called with the config as keyword arguments.
 
 
-    If only `path` is provided, the Directory corresponding to `Path` is
+    If only `path` is provided, the corresponding Directory is
     returned. It will be empty if `path` points to an empty or nonexistent
     directory.
 
-    If only `conf` is provided, it will search the current `root_dir`
+    If only `config` is provided, it will search the current `root_dir`
     for a matching directory, and return a Directory pointing there if it
     exists. Otherwise, a new Directory will be constructed at the top level of
     the `root_dir`.
 
-    If both `path` and `conf` are provided, it will return the Directory
+    If both `path` and `config` are provided, it will return the Directory
     at `path`, building it if necessary. If `path` points to an existing
-    directory that is not a sucessfully built Directory matching `conf`, an
+    directory that is not a sucessfully built Directory matching `config`, an
     error is raised.
 
-    Fields:
-        - **path** (*Path*): The path to the root of the file tree backing this \
-            Directory
-        - **conf** (*Namespace*): The Namespace (inherited from
-            `Configurable`)
-        - **meta** (*Namespace*): The metadata stored in \
-            `{self.path}/_meta.yaml`
+    Attributes:
+        path (Path): The path at which the Directory is, or should be, stored.
+        config (Dict[str, object]): The configuration of the Directory.
 
-    After instantiation, Directorys act as string-keyed `MutableMapping`s (with
-    some additional capabilities), containing three types of entries:
-    `ArrayFile`s, `Path`s, and other `Directory`s.
+    After instantiation, Directorys act as string-keyed mutable dictionaries,
+    containing three types of entries: `ArrayFile`s, `Path`s, and other `Directory`s.
 
     `ArrayFile`s are single-entry HDF5 files, in SWMR mode. Array-like numeric
     and byte-string data (valid operands of `numpy.asarray`) written into an
@@ -327,23 +352,15 @@ class Directory(metaclass=NonExistingDirectory):
 
     `Directory` entries are returned as properly subtyped Directorys, and can be
     created, via `__setitem__`, `__setattr__`, or `extend`, from existing
-    Directorys or (possibly nested) string-keyed `Mapping`s (*e.g* a dictionary
-    of arrays).
+    Directorys or (possibly nested) dictionaries of arrays.
     """
 
     class Config(Protocol):
         """
-        A configuration
-
-        If its definition is inline (lexically within the containing class'
-        definition), it will be translated into a JSON-Schema to validate
-        configurations passed into the outer class' constructor.
-
-        `Config` classes are intended to be interface definitions. They can extend
-        `typing_extensions.Protocol` to support static analysis.
-
-        An empty `Conf` definition is created for every `Configurable` subclass
-        defined without one.
+        `Config` classes are intended to be interface definitions. They are
+        used to define the structure of the `config` argument to the
+        `Directory` constructor, and to provide type hints for the `config`
+        attribute of `Directory` instances.
         """
 
         pass
@@ -351,9 +368,9 @@ class Directory(metaclass=NonExistingDirectory):
     path: Path
     config: Config
 
-    def __new__(cls, *args: object, **kwargs: object) -> Any:
+    def __new__(_type, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
-        cls = _directory(cls)
+        cls = _directory(_type)
         _check_implementation(cls)
 
         defaults = get_defaults(cls)
@@ -370,36 +387,35 @@ class Directory(metaclass=NonExistingDirectory):
                 pass
         # breakpoint()
         if path is not None and config is None:
-            cls = _check_size(_directory_from_path(cls, _resolve_path(path)))
+            cls = _directory_from_path(cls, _resolve_path(path))
         elif path is None and config is not None:
-            cls = _check_size(_directory_from_config(cls, config))
+            cls = _directory_from_config(cls, config)
         elif path is not None and config is not None:
-            cls = _check_size(
-                _directory_from_path_and_config(cls, _resolve_path(path), config)
-            )
+            cls = _directory_from_path_and_config(cls, _resolve_path(path), config)
         elif path is None and config is None:
             if _implements_init(cls):
                 # raise ValueError("no configuration provided")
                 pass
 
-        if defaults:
-            _update_doc(cls)
+        if context.check_size_on_init:
+            cls.check_size()
 
         return cls
 
-    def __init__(self, config: Config):
-        """Implement to compile data at runtime from a configuration.
+    def __init__(self):
+        """Implement to compile `Directory` from a configuration.
 
-        Note, subclasses should implement Config to determine the interface,
-        types and defaults of `config`.
-
-        Subclasses can implement `__init__(self)` without arguments and still
-        access the configuration via `self.config`.
-
-        To instantiate a subclass of a directory, the config arguments can be
-        given as individual key word arguments or as a dictionary.
+        Note, subclasses can either implement Config to determine the interface,
+        types and defaults of `config`, or implement `__init__` with keyword
+        arguments to determine the interface, types and defaults of `config`.
+        In case both are implemented, the config is created from the joined
+        interface of both as long as defaults are not conflicting.
         """
         pass
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.__doc__ = _auto_doc(cls)
 
     @property
     def meta(self) -> Namespace:
@@ -446,26 +462,9 @@ class Directory(metaclass=NonExistingDirectory):
     def keys(self) -> Iterator[str]:
         return self.__iter__()
 
-    def size(self) -> None:
-        __check_size = get_check_size_on_init()
-        check_size_on_init(True)
-        _check_size(self, print_size=True)
-        check_size_on_init(__check_size)
-
     def items(self) -> Iterator[Tuple[str, ArrayFile]]:
         for key in self.keys():
             yield (key, self[key])
-
-    def to_df(self, dtypes: dict = None) -> DataFrame:
-        """
-        Returns a DataFrame from all equal length, single-dim .h5 datasets in self.path.
-        """
-        # to cache the dataframe that is expensive to create.
-        try:
-            return object.__getattribute__(self, "_as_df")
-        except:
-            object.__setattr__(self, "_as_df", directory_to_df(self, dtypes))
-            return self.to_df()
 
     @classmethod
     def from_df(cls, df: DataFrame, dtypes: dict, *args, **kwargs):
@@ -474,19 +473,6 @@ class Directory(metaclass=NonExistingDirectory):
             {column: df[column].values.astype(dtypes[column]) for column in df.columns}
         )
         return directory
-
-    def to_dict(self) -> DataFrame:
-        """
-        Returns a DataFrame from all equal length, single-dim .h5 datasets in self.path.
-        """
-        # to cache the dict that is expensive to create.
-        try:
-            return object.__getattribute__(self, "_as_dict")
-        except:
-            object.__setattr__(self, "_as_dict", directory_to_dict(self))
-            return self.to_dict()
-
-    # TODO: from dict
 
     def update(self, other, suffix: str = "") -> None:
         """
@@ -498,7 +484,8 @@ class Directory(metaclass=NonExistingDirectory):
 
     def move(self, dst):
         """Move directory to dst."""
-        return shutil.move(self.path, dst)
+        shutil.move(self.path, dst)
+        return Directory(dst)
 
     def rmtree(self, y_n=None):
         reply = y_n or input(f"delete {self.path} recursively, y/n?")
@@ -508,87 +495,6 @@ class Directory(metaclass=NonExistingDirectory):
     def _rebuild(self, y_n=None):
         self.rmtree(y_n)
         _build(self)
-
-    def check_size(self, print=True):
-        return check_size(self.path, print_size=print)
-
-    def mtime(self):
-        return datetime.datetime.fromtimestamp(self.path.stat().st_mtime)
-
-    @property
-    def parent(self):
-        return Directory(self.path.absolute().parent)
-
-    def _override_config(self, config, status=None):
-        """Overriding config stored in _meta.yaml.
-
-        config (Dict): update for meta.config
-        status (str): status if config did not exist before, i.e. _overrid_config
-            is used to store a _meta.yaml for the first time instead of build.
-        """
-        meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
-        current_config = self.config
-        if current_config is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("always")
-                warnings.warn(
-                    (
-                        f"Overriding config. Diff is:"
-                        f'{config.diff(current_config, name1="passed", name2="stored")}'
-                    ),
-                    ConfigWarning,
-                    stacklevel=2,
-                )
-            write_meta(config=config, status="overridden")
-        else:
-            write_meta(config=config, status=status or self.status)
-
-    def _override_status(self, status):
-        meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
-        current_status = self.status
-        if current_status is not None:
-            with warnings.catch_warnings():
-                warnings.simplefilter("always")
-                warnings.warn(
-                    (f"Overriding status {current_status} to {status}"),
-                    ConfigWarning,
-                    stacklevel=2,
-                )
-        write_meta(config=self.config, status=status)
-
-    def _modified_past_init(self, is_modified):
-        meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
-        if is_modified:
-            write_meta(config=self.config, status=self.status, modified=True)
-
-    def _count(self) -> int:
-        root = self.path
-        count = 0
-        for i in itertools.count():
-            dst = root / f"{i:04x}"
-            if dst.exists():
-                count += 1
-            else:
-                return count
-        return count
-
-    def _next(self) -> int:
-        root = self.path
-        dst = root / f"{self._count():04x}"
-        assert not dst.exists()
-        return Directory(dst, self.config)
 
     def __truediv__(self, other):
         return self.__getitem__(other)
@@ -703,6 +609,41 @@ class Directory(metaclass=NonExistingDirectory):
         else:
             shutil.rmtree(path, ignore_errors=True)
 
+    def extend(self, key: str, val: object) -> None:
+        """
+        Extends an `ArrayFile`, `Path`, or `Directory` at `self.path/key`
+
+        Extending `ArrayFile`s performs concatenation along the first axis,
+        extending `Path`s performs byte-level concatenation, and
+        extending subDirectorys extends their fields.
+
+        Files corresponding to `self[key]` are created if they do not already
+        exist.
+        """
+        path = self.path / key
+
+        # Append an existing file.
+        if isinstance(val, Path):
+            assert path.suffix != ""
+            _extend_file(path, val)
+
+        # Append a subDirectory.
+        elif isinstance(val, (Mapping, Directory)):
+            assert path.suffix == ""
+            for k in val:
+                Directory(path).extend(k, val[k])
+
+        # Append an array.
+        else:
+            assert path.suffix == ""
+            _extend_h5(path.with_suffix(".h5"), val)
+
+        if self.config is not None and self.status == "done":
+            # Track if a Directory has been modified past __init__
+            self._modified_past_init(True)
+
+    # --- Views ---
+
     def __repr__(self):
         if context.verbosity_level == 1:
             string = tree(
@@ -752,39 +693,6 @@ class Directory(metaclass=NonExistingDirectory):
             )
         )
 
-    def extend(self, key: str, val: object) -> None:
-        """
-        Extends an `ArrayFile`, `Path`, or `Directory` at `self.path/key`
-
-        Extending `ArrayFile`s performs concatenation along the first axis,
-        extending `Path`s performs byte-level concatenation, and
-        extending subDirectorys extends their fields.
-
-        Files corresponding to `self[key]` are created if they do not already
-        exist.
-        """
-        path = self.path / key
-
-        # Append an existing file.
-        if isinstance(val, Path):
-            assert path.suffix != ""
-            _extend_file(path, val)
-
-        # Append a subDirectory.
-        elif isinstance(val, (Mapping, Directory)):
-            assert path.suffix == ""
-            for k in val:
-                Directory(path).extend(k, val[k])
-
-        # Append an array.
-        else:
-            assert path.suffix == ""
-            _extend_h5(path.with_suffix(".h5"), val)
-
-        if self.config is not None and self.status == "done":
-            # Track if a Directory has been modified past __init__
-            self._modified_past_init(True)
-
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
@@ -822,11 +730,115 @@ class Directory(metaclass=NonExistingDirectory):
 
         return cast(list, object.__dir__(self))
 
-    # -- Other convenience methods --------------------
+    # -- Convenience methods
 
-    def _clear_dir(self, suffix: str) -> None:
+    def _override_config(self, config, status=None):
+        """Overriding config stored in _meta.yaml.
+
+        config (Dict): update for meta.config
+        status (str): status if config did not exist before, i.e. _overrid_config
+            is used to store a _meta.yaml for the first time instead of build.
         """
-        Delete files ending with suffix in the current wrap path
+        meta_path = self.path / "_meta.yaml"
+
+        def write_meta(**kwargs):
+            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+
+        current_config = self.config
+        if current_config is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.warn(
+                    (
+                        f"Overriding config. Diff is:"
+                        f'{config.diff(current_config, name1="passed", name2="stored")}'
+                    ),
+                    ConfigWarning,
+                    stacklevel=2,
+                )
+            write_meta(config=config, status="overridden")
+        else:
+            write_meta(config=config, status=status or self.status)
+
+    def _override_status(self, status):
+        meta_path = self.path / "_meta.yaml"
+
+        def write_meta(**kwargs):
+            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+
+        current_status = self.status
+        if current_status is not None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.warn(
+                    (f"Overriding status {current_status} to {status}"),
+                    ConfigWarning,
+                    stacklevel=2,
+                )
+        write_meta(config=self.config, status=status)
+
+    def _modified_past_init(self, is_modified):
+        meta_path = self.path / "_meta.yaml"
+
+        def write_meta(**kwargs):
+            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+
+        if is_modified:
+            write_meta(config=self.config, status=self.status, modified=True)
+
+    def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
+        """Prints the size of the directory in bytes."""
+        return check_size(self.path, warning_at, print_size)
+
+    def to_df(self, dtypes: dict = None) -> DataFrame:
+        """
+        Returns a DataFrame from all equal length, single-dim .h5 datasets in self.path.
+        """
+        # to cache the dataframe that is expensive to create.
+        try:
+            return object.__getattribute__(self, "_as_df")
+        except:
+            object.__setattr__(self, "_as_df", directory_to_df(self, dtypes))
+            return self.to_df()
+
+    def to_dict(self) -> DataFrame:
+        """
+        Returns a DataFrame from all equal length, single-dim .h5 datasets in self.path.
+        """
+        # to cache the dict that is expensive to create.
+        try:
+            return object.__getattribute__(self, "_as_dict")
+        except:
+            object.__setattr__(self, "_as_dict", directory_to_dict(self))
+            return self.to_dict()
+
+    def mtime(self):
+        return datetime.datetime.fromtimestamp(self.path.stat().st_mtime)
+
+    @property
+    def parent(self):
+        return Directory(self.path.absolute().parent)
+
+    def _count(self) -> int:
+        root = self.path
+        count = 0
+        for i in itertools.count():
+            dst = root / f"{i:04x}"
+            if dst.exists():
+                count += 1
+            else:
+                return count
+        return count
+
+    def _next(self) -> int:
+        root = self.path
+        dst = root / f"{self._count():04x}"
+        assert not dst.exists()
+        return Directory(dst, self.config)
+
+    def _clear_filetype(self, suffix: str) -> None:
+        """
+        Delete files ending with suffix in the current directory path
         """
         for file in self.path.iterdir():
             if file.is_file() and file.suffix == suffix:
@@ -836,27 +848,30 @@ class Directory(metaclass=NonExistingDirectory):
 # -- Directory construction -----------------------------------------------------
 
 
-def get_defaults(cls: Directory):
-    defaults = {}
-
-    default_Config = namespacify(get_defaults_from_Config(cls))
-    default_init = namespacify(get_defaults_from_init(cls))
-
-    if default_Config.is_disjoint(default_init):
-        defaults.update(default_Config)
-        defaults.update(default_init)
-    elif default_Config.is_superset(default_init):
-        defaults.update(default_Config)
-    elif default_init.is_superset(default_Config):
-        defaults.update(default_init)
+def merge(dict1, dict2):
+    merged = {}
+    if is_disjoint(dict1, dict2):
+        merged.update(dict1)
+        merged.update(dict2)
+    elif is_superset(dict1, dict2):
+        merged.update(dict1)
+    elif is_superset(dict2, dict1):
+        merged.update(dict2)
     else:
-        raise ValueError
-    defaults = namespacify(defaults)
-    return defaults
+        raise ValueError(f"merge conflict: {dict1} and {dict2}")
+    return merged
 
 
-def get_defaults_from_Config(cls: Directory):
-    if "Config" in type(cls).__dict__:
+def get_defaults(cls: Directory):
+    try:
+        return merge(get_defaults_from_Config(cls), get_defaults_from_init(cls))
+    except ValueError as e:
+        raise ValueError("conflicting defaults") from e
+
+
+def get_defaults_from_Config(cls: Union[type, Directory]):
+    cls = cls if isinstance(cls, type) else type(cls)
+    if "Config" in cls.__dict__:
         return {
             k: v
             for k, v in cls.Config.__dict__.items()
@@ -866,7 +881,8 @@ def get_defaults_from_Config(cls: Directory):
 
 
 def get_defaults_from_init(cls: Directory):
-    signature = inspect.signature(type(cls).__init__)
+    cls = cls if isinstance(cls, type) else type(cls)
+    signature = inspect.signature(cls.__init__)
     defaults = {
         k: v.default
         for k, v in signature.parameters.items()
@@ -875,11 +891,21 @@ def get_defaults_from_init(cls: Directory):
     return defaults
 
 
-def get_annotations(cls: Directory):
-    if "Config" in type(cls).__dict__:
+def get_annotations(cls: Union[type, Directory]):
+    return merge(get_annotations_from_Config(cls), get_annotations_from_init(cls))
+
+
+def get_annotations_from_Config(cls: Union[type, Directory]):
+    cls = cls if isinstance(cls, type) else type(cls)
+    if "Config" in cls.__dict__:
         annotations = getattr(cls.Config, "__annotations__", {})
-        return Namespace(annotations)
-    return Namespace({})
+        return annotations
+    return {}
+
+
+def get_annotations_from_init(cls: Directory):
+    cls = cls if isinstance(cls, type) else type(cls)
+    return {k: v for k, v in cls.__init__.__annotations__.items() if v is not None}
 
 
 def _parse_directory_args(
@@ -962,14 +988,12 @@ def _implements_init(cls: Directory) -> bool:
     return inspect.getsource(cls.__init__).split("\n")[-2].replace(" ", "") != "pass"
 
 
-def _check_implementation(cls):
+def _check_implementation(cls: Directory):
     defaults = get_defaults(cls)
+    # check if Config only has annotations, no defaults
+    annotations = get_annotations(cls)
 
-    if not defaults:
-        # check if Config only has annotations, no defaults
-        defaults = get_annotations(cls.__class__)
-
-    if _implements_init(cls) and not defaults:
+    if _implements_init(cls) and not defaults and not annotations:
         with warnings.catch_warnings():
             warnings.simplefilter("always")
             warnings.warn(
@@ -981,7 +1005,7 @@ def _check_implementation(cls):
 
 def _directory(cls: type) -> Directory:
     """
-    Return a new Directory corresponding to the file tree at root_dir / cls.__name___ *
+    Return a new Directory at the root of the file tree.
     """
     directory = _forward_subclass(cls, {})
     path = _new_directory_path(type(directory))
@@ -997,13 +1021,6 @@ def _directory_from_path(cls: Directory, path: Path) -> Directory:
     An error is raised if the type recorded in `_meta.yaml`, if any, is not a
     subtype of `cls`.
     """
-
-    # def _has_defaults_for_init(cls):
-    #     """True if cls implements Config and __init__(self, config)"""
-    #     return (
-    #         "Config" in cls.__dict__
-    #         and len(inspect.signature(cls.__init__).parameters) == 2
-    #     )
 
     config = read_meta(path).config or {}
     written_type = get_scope().get(config.get("type", None), None)
@@ -1040,7 +1057,7 @@ def _directory_from_path(cls: Directory, path: Path) -> Directory:
 
 def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Directory:
     """
-    Find or build a Directory with the given type and Namespace.
+    Find or build a Directory with the given type and config.
     """
     directory = _forward_subclass(type(cls), conf)
     new_dir_path = _new_directory_path(type(directory))
@@ -1104,7 +1121,7 @@ def _directory_from_path_and_config(
     cls: Directory, path: Path, conf: Mapping[str, object]
 ) -> Directory:
     """
-    Find or build a Directory with the given type, path, and Namespace.
+    Find or build a Directory with the given type, path, and config.
     """
     directory = _forward_subclass(type(cls), conf)
     object.__setattr__(directory, "_cached_keys", set())
@@ -1157,7 +1174,6 @@ def _build(directory: Directory) -> None:
     """
     Create parent directories, invoke `Directory.__init__`, and store metadata.
     """
-    # TODO: Fix YAML generation.
 
     if directory.path.exists() and directory.status == "done":
         return
@@ -1200,37 +1216,78 @@ def _build(directory: Directory) -> None:
         raise e
 
 
-def _update_doc(cls):
-    if "Config" not in type(cls).__dict__:
-        return
-    Config = type(cls).__dict__["Config"]
+def call_signature(cls):
+    signature = (
+"""
 
-    def clsstrip(string):
-        string = string[string.find("'") + 1 : string.rfind("'")]
-        return string.replace("__main__.", "")
+Example call signature:
+    {}
+    {}
+Note, these use the `Directory(config: Dict[str, object])` constructor and are
+inferred from defaults and annotations, i.e. they are equivalent to constructing
+without arguments."""
+)
+    defaults = to_dict(get_defaults(cls))
+    string = ""
+    for key, val in defaults.items():
+        string += f"{key}={val}, "
+    if string.endswith(", "):
+        string = string[:-2]
+    # variant 1: unpacking config kwargs
+    signature1 = ""
+    if string:
+        signature1 = f"{cls.__qualname__}({string})"
+    # variant 2: whole config
+    signature2 = ""
+    if defaults:
+        signature2 = f"{cls.__qualname__}({defaults})"
 
-    doc = cls.__doc__
-    if doc is None:
-        doc = ""
-    else:
-        doc += "\n\n"
-    doc += "Initialize from config or leave default:\n"
-    doc += "{}(dict(\n{}))"
-    attributes = ""
-    for k, v in Config.__dict__.items():
-        if not k.startswith("__"):
-            if (
-                hasattr(Config, "__annotations__")
-                and Config.__annotations__.get(k, None) is not None
-            ):
-                annotation = Config.__annotations__.get(k)
-                attributes += f"{k}: {clsstrip(repr(annotation))} = {v},\n"
-            else:
-                attributes += f"{k} = {v},\n"
+    if signature1 and signature2:
+        return signature.format(signature1, signature2)
 
-    name = clsstrip(repr(Config)).replace(".Config", "")
-    cls.__doc__ = doc.format(name, attributes)
+    return signature.format("(specify defaults for auto-doc of call signature)", "")
 
+
+def type_signature(cls):
+    signature = (
+    """
+
+    Types of config elements:
+       {}
+
+    """
+    )
+    annotations = to_dict(get_annotations(cls))
+    def qualname(annotation):
+        origin = get_origin(annotation)
+        if origin:
+            return repr(annotation)
+        return annotation.__qualname__
+    signature1 = ""
+    for key, val in annotations.items():
+        signature1 += f"{key}: {qualname(val)}, "
+    if signature1.endswith(", "):
+        signature1 = signature1[:-2]
+    if signature1:
+        return signature.format(signature1)
+    return signature.format("(annotate types for auto-doc of type signature)")
+
+def _auto_doc(cls: type, cls_doc=True, base_doc=False):
+    docstring = "{}{}{}{}"
+    if isinstance(cls, Directory):
+        cls = type(cls)
+    call_sig = call_signature(cls)
+    type_sig = type_signature(cls)
+
+    _cls_doc = ""
+    if cls_doc and cls.__doc__:
+        _cls_doc = cls.__doc__
+
+    _base_doc = ""
+    if base_doc and cls.__base__.__doc:
+        _base_doc = cls.__base__.__doc__
+
+    return docstring.format(_cls_doc, call_sig, type_sig, _base_doc)
 
 def _resolve_path(path: Path) -> Path:
     """
@@ -1254,16 +1311,9 @@ def _new_directory_path(type_: type) -> Path:
     assert False  # for MyPy
 
 
-def _check_size(directory: Directory, warning_at=20 * 1024**3, print_size=False):
-    """
-    Checks the size of the Directory directory on instantiation and warns if it exceeds 20GiB (default).
-    """
-    if context.check_size_on_init:
-        _check_size(directory.path, warning_at, print_size)
-    return directory
-
-
 def check_size(path: Path, warning_at=20 * 1024**3, print_size=False) -> None:
+    """Prints the size of the directory at path and warns if it exceeds warning_at."""
+
     def sizeof_fmt(num, suffix="B"):
         for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"]:
             if abs(num) < 1024.0:
@@ -1295,6 +1345,7 @@ def check_size(path: Path, warning_at=20 * 1024**3, print_size=False) -> None:
                 ResourceWarning,
                 stacklevel=2,
             )
+    return size_in_bytes
 
 
 def _forward_subclass(cls: type, config: object = {}) -> object:
