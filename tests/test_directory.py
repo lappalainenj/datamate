@@ -739,7 +739,7 @@ def test_auto_doc(tmp_path):
 
 
 class SmartDir(Directory):
-    def __init__(self, foo=2, bar=3):
+    def __init__(self, foo: int=2, bar: int=3):
         self.foo = foo
         self.bar = bar
 
