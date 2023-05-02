@@ -8,7 +8,8 @@ def get_version():
     from pathlib import Path
 
     root = Path(__file__).parent
-    return open(root / "datamate/version", "r").read().strip()
+    string = open(root / "datamate/version.py", "r").read().strip()
+    return string.split("=")[-1].strip().strip('"')
 
 
 setup(
