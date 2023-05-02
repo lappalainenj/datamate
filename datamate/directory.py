@@ -94,6 +94,7 @@ context = threading.local()
 context.enforce_config_match = True
 context.check_size_on_init = False
 context.verbosity_level = 2
+# context.in_memory = False
 
 
 def set_root_dir(root_dir: Optional[Path]) -> None:
@@ -200,6 +201,17 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
         set_root_dir(_root_dir)
         context.within_root_context = False
 
+
+# @contextmanager
+# def in_memory():
+#     """Set in_memory mode within a context and revert after to debug a Directory.
+#     """
+#     _in_memory = getattr(context, "in_memory", False)
+#     context.in_memory = True
+#     try:
+#         yield
+#     finally:
+#         context.in_memory = _in_memory
 
 def enforce_config_match(enforce: bool) -> None:
     """
@@ -513,6 +525,9 @@ class Directory(metaclass=NonExistingDirectory):
         attributes (i.e. `Directory['name.ext']` is equivalent to
         `Directory.name__ext`).
         """
+        # if context.in_memory:
+        #     return object.__getattribute__(self, key)
+
         try:
             # to catch cases where key is an index to a reference to an h5 file.
             # this will yield a TypeError because Path / slice does not work.
@@ -553,6 +568,10 @@ class Directory(metaclass=NonExistingDirectory):
         attributes (i.e. `Directory['name.ext'] = val` is equivalent to
         `Directory.name__ext = val`).
         """
+        # if context.in_memory:
+        #     object.__setattr__(self, key, val)
+        #     return
+
         path = self.path / key
 
         # Copy an existing file or directory.
@@ -595,6 +614,9 @@ class Directory(metaclass=NonExistingDirectory):
         attributes (i.e. `del Directory['name.ext']` is equivalent to
         `del Directory.name__ext`).
         """
+        # if context.in_memory:
+        #     object.__delitem__(self, key)
+        #     return
         path = self.path / key
 
         # Delete an array file.
@@ -620,6 +642,9 @@ class Directory(metaclass=NonExistingDirectory):
         Files corresponding to `self[key]` are created if they do not already
         exist.
         """
+        # if context.in_memory:
+        #     self.__setitem__(key, np.append(self.__getitem__(key), val, axis=0))
+
         path = self.path / key
 
         # Append an existing file.
@@ -1383,17 +1408,29 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 # -- I/O -----------------------------------------------------------------------
 
 
-def _read_h5(path: Path) -> ArrayFile:
+def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
     try:
         f = h5.File(path, "r", libver="latest", swmr=True)
-        assert f.swmr_mode
+        if assert_swmr:
+            assert f.swmr_mode, "File is not in SWMR mode."
         return f["data"]
     except OSError as e:
         print(e)
-        if "errno = 2" in str(e):  # 2 := File not found.
+        if "errno = 2" in str(e):
             raise e
         sleep(0.1)
         return _read_h5(path)
+
+    # try:
+    #     f = h5.File(path, "r", libver="latest", swmr=True)
+    #     assert f.swmr_mode
+    #     return f["data"]
+    # except OSError as e:
+    #     print(e)
+    #     if "errno = 2" in str(e):  # 2 := File not found.
+    #         raise e
+    #     sleep(0.1)
+    #     return _read_h5(path)
 
 
 def _write_h5(path: Path, val: object) -> None:
@@ -1426,6 +1463,21 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
     # mode='a' to read file, create otherwise
     try:
         f = h5.File(path, libver="latest", mode="a")
+        if "data" not in f:
+            dset = f.require_dataset(
+                name="data",
+                shape=None,
+                maxshape=(None, *val.shape[1:]),
+                dtype=val.dtype,
+                data=np.empty((0, *val.shape[1:]), val.dtype),
+                chunks=(
+                    int(np.ceil(2**12 / np.prod(val.shape[1:]))),
+                    *val.shape[1:],
+                ),
+            )
+            f.swmr_mode = True
+        else:
+            dset = f["data"]
     except BlockingIOError as e:
         print(e)
         if "errno = 11" in str(e) or "errno = 35" in str(
@@ -1443,26 +1495,27 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
             return
         else:
             raise e
-    if "data" not in f:
-        dset = f.require_dataset(
-            name="data",
-            shape=None,
-            maxshape=(None, *val.shape[1:]),
-            dtype=val.dtype,
-            data=np.empty((0, *val.shape[1:]), val.dtype),
-            chunks=(
-                int(np.ceil(2**12 / np.prod(val.shape[1:]))),
-                *val.shape[1:],
-            ),
-        )
-        f.swmr_mode = True
-    else:
-        dset = f["data"]
-    if len(val) > 0:
-        dset.resize(dset.len() + len(val), 0)
-        dset[-len(val) :] = val
-        dset.flush()
 
+    def _override_to_chunked(path: Path, val: object) -> None:
+        # override as chunked dataset
+        data = _read_h5(path, assert_swmr=False)[()]
+        path.unlink()
+        _extend_h5(path, data)
+        # call extend again with new value
+        _extend_h5(path, val)
+
+    if len(val) > 0:
+        try:
+            dset.resize(dset.len() + len(val), 0)
+            dset[-len(val) :] = val
+            dset.flush()
+        except TypeError as e:
+            # workaround if dataset was first created as non-chunked
+            # using __setitem__ and then extended using extend
+            if "Only chunked datasets can be resized" in str(e):
+                _override_to_chunked(path, val)
+            else:
+                raise e
 
 def _copy_file(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)

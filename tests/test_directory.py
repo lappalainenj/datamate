@@ -205,12 +205,22 @@ def test_list_extension(tmp_path: Path) -> None:
     a.extend("b", [[11, 12]])
     assert_directory_equals(a, {"b": [[7, 8], [9, 10], [11, 12]]})
 
+    b = Directory(tmp_path)
+    b.b = [[7, 8], [9, 10]]
+    b.extend("b", [[11, 12]])
+    assert_directory_equals(a, {"b": [[7, 8], [9, 10], [11, 12]]})
+
 
 def test_array_extension(tmp_path: Path) -> None:
     a = Directory(tmp_path)
     a.extend("b", np.uint16([[7, 8], [9, 10]]))
     a.extend("b", np.uint16([[11, 12]]))
     assert_directory_equals(a, {"b": np.uint16([[7, 8], [9, 10], [11, 12]])})
+
+    b = Directory(tmp_path)
+    b.b = np.uint16([[7, 8], [9, 10]])
+    b.extend("b", np.uint16([[11, 12]]))
+    assert_directory_equals(b, {"b": np.uint16([[7, 8], [9, 10], [11, 12]])})
 
 
 def test_path_extension(tmp_path: Path) -> None:
@@ -219,6 +229,18 @@ def test_path_extension(tmp_path: Path) -> None:
     a.extend("b.bin", data_file(tmp_path / "b1.bin"))
     assert_directory_equals(
         a,
+        {
+            "b.bin": data_file_concat(
+                tmp_path / "b2.bin", [tmp_path / "b0.bin", tmp_path / "b1.bin"]
+            )
+        },
+    )
+
+    b = Directory(tmp_path / "a")
+    b["b.bin"] = data_file(tmp_path / "b0.bin")
+    b.extend("b.bin", data_file(tmp_path / "b1.bin"))
+    assert_directory_equals(
+        b,
         {
             "b.bin": data_file_concat(
                 tmp_path / "b2.bin", [tmp_path / "b0.bin", tmp_path / "b1.bin"]
@@ -247,6 +269,32 @@ def test_dict_extension(tmp_path: Path) -> None:
     )
     assert_directory_equals(
         a,
+        {
+            "b": {
+                "c": np.uint16([[1, 2], [3, 4]]),
+                "d.bin": data_file_concat(
+                    tmp_path / "d2.bin", [tmp_path / "d0.bin", tmp_path / "d1.bin"]
+                ),
+                "e": {"f": [0.1, 0.2, 0.3, 0.4, 0.5]},
+            }
+        },
+    )
+    b = Directory(tmp_path / "b")
+    b.b = {
+            "c": np.empty((0, 2), dtype="uint16"),
+            "d.bin": data_file(tmp_path / "d0.bin"),
+            "e": {"f": [0.1, 0.2]},
+        }
+    b.extend(
+        "b",
+        {
+            "c": np.uint16([[1, 2], [3, 4]]),
+            "d.bin": data_file(tmp_path / "d1.bin"),
+            "e": {"f": [0.3, 0.4, 0.5]},
+        },
+    )
+    assert_directory_equals(
+        b,
         {
             "b": {
                 "c": np.uint16([[1, 2], [3, 4]]),
