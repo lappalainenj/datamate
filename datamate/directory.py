@@ -30,7 +30,7 @@ from typing import (
     Dict,
     Union,
     cast,
-    get_origin
+    get_origin,
 )
 from typing_extensions import Protocol
 import datetime
@@ -43,7 +43,13 @@ import h5py as h5
 import numpy as np
 from pandas import DataFrame
 
-from datamate.namespaces import Namespace, namespacify, is_disjoint, is_superset, to_dict
+from datamate.namespaces import (
+    Namespace,
+    namespacify,
+    is_disjoint,
+    is_superset,
+    to_dict,
+)
 
 __all__ = ["Directory", "ArrayFile"]
 
@@ -137,6 +143,7 @@ def root(root_dir: Union[str, Path, NoneType] = None):
 
     def decorator(callable):
         if inspect.isfunction(callable):
+
             @functools.wraps(callable)
             def function(*args, **kwargs):
                 _root_dir = get_root_dir()
@@ -153,6 +160,7 @@ def root(root_dir: Union[str, Path, NoneType] = None):
                 _return = callable(*args, **kwargs)
                 set_root_dir(_root_dir)
                 return _return
+
             return function
         elif inspect.isclass(callable):
             new = callable.__new__
@@ -179,7 +187,9 @@ def root(root_dir: Union[str, Path, NoneType] = None):
             return callable
         else:
             raise ValueError
+
     return decorator
+
 
 @contextmanager
 def set_root_context(root_dir: Union[str, Path, NoneType] = None):
@@ -212,6 +222,7 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
 #         yield
 #     finally:
 #         context.in_memory = _in_memory
+
 
 def enforce_config_match(enforce: bool) -> None:
     """
@@ -315,21 +326,18 @@ class Directory(metaclass=NonExistingDirectory):
             search for and construct in the scope. Note, the config can be
             unpacked into the constructor as keyword arguments.
 
-    Constructors:
-         - Directory(): creates auto-named Directory inside the current
-            `root_dir`.
-         - Directory(config: Dict[str, object]): creates auto-named Directory inside
-            the current `root_dir` with the given config. If __init__ is
-            implemented, it will be called with the config as keyword arguments.
-         - Directory(path: Union[str, Path]): creates named Directory inside the
-             current `root_dir`. `path` will be either relative to the current
-                `root_dir` or absolute.
-         - Directory(path: Union[str, Path], config: Dict[str, object]): creates
-            named Directory inside the
-             current `root_dir`. `path` will be either relative to the current
-                `root_dir` or absolute. If __init__ is
-            implemented, it will be called with the config as keyword arguments.
+    Valid constructors:
+            To auto-name Directorys relative to `root_dir`:
+            - Directory()
+            - Directory(config: Dict[str, object])
 
+            To name Directorys relative to `root_dir` or absolute:
+            - Directory(path: Union[str, Path])
+            - Directory(path: Union[str, Path], config: Dict[str, object])
+            Note, config can also be passed as keyword arguments after
+            `path`.
+
+    If __init__ is implemented, it will be called to build the Directory.
 
     If only `path` is provided, the corresponding Directory is
     returned. It will be empty if `path` points to an empty or nonexistent
@@ -1000,11 +1008,14 @@ def _parse_directory_args(
             "Invalid argument types for the `Directory` constructor.\n"
             "Valid signatures:\n"
             "\n"
-            "    - Directory(conf: Mapping[str, object])\n"
-            "    - Directory(path: Path|str)\n"
-            "    - Directory(path: Path|str, conf: Mapping[str, object])\n"
+            "    - Directory()\n"
+            "    - Directory(config: Dict[str, object])\n"
+            "    - Directory(path: Path)\n"
+            "    - Directory(path: Path, config: Dict[str, object])\n"
             "    - Directory(name: str)\n"
-            "    - Directory(name: str, conf: Mapping[str, object])"
+            "    - Directory(name: str, config: Dict[str, object])"
+            "Note, config can also be passed as keyword arguments after "
+            "`path` or `name`. `name` is relative to the root directory."
         )
 
 
@@ -1022,7 +1033,10 @@ def _check_implementation(cls: Directory):
         with warnings.catch_warnings():
             warnings.simplefilter("always")
             warnings.warn(
-                (f"The Directory {type(cls)} implements __init__ but not Config."),
+                (
+                    f"The Directory {type(cls)} implements __init__ to write data"
+                    " but specifies no configuration."
+                ),
                 ImplementationWarning,
                 stacklevel=2,
             )
@@ -1242,8 +1256,7 @@ def _build(directory: Directory) -> None:
 
 
 def call_signature(cls):
-    signature = (
-"""
+    signature = """
 
 Example call signature:
     {}
@@ -1251,7 +1264,6 @@ Example call signature:
 Note, these use the `Directory(config: Dict[str, object])` constructor and are
 inferred from defaults and annotations, i.e. they are equivalent to constructing
 without arguments."""
-)
     defaults = to_dict(get_defaults(cls))
     string = ""
     for key, val in defaults.items():
@@ -1274,20 +1286,20 @@ without arguments."""
 
 
 def type_signature(cls):
-    signature = (
-    """
+    signature = """
 
     Types of config elements:
        {}
 
     """
-    )
     annotations = to_dict(get_annotations(cls))
+
     def qualname(annotation):
         origin = get_origin(annotation)
         if origin:
             return repr(annotation)
         return annotation.__qualname__
+
     signature1 = ""
     for key, val in annotations.items():
         signature1 += f"{key}: {qualname(val)}, "
@@ -1296,6 +1308,7 @@ def type_signature(cls):
     if signature1:
         return signature.format(signature1)
     return signature.format("(annotate types for auto-doc of type signature)")
+
 
 def _auto_doc(cls: type, cls_doc=True, base_doc=False):
     docstring = "{}{}{}{}"
@@ -1313,6 +1326,7 @@ def _auto_doc(cls: type, cls_doc=True, base_doc=False):
         _base_doc = cls.__base__.__doc__
 
     return docstring.format(_cls_doc, call_sig, type_sig, _base_doc)
+
 
 def _resolve_path(path: Path) -> Path:
     """
@@ -1387,14 +1401,32 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
         try:
             cls = get_scope()[cls_override]
         except KeyError as e:
-            raise KeyError(
-                f'"{cls_override}" can\'t be resolved because it is not found'
-                + f" inside the current scope of Directory subclasses."
-                + " If this happens unexpectedly with autoreload enabled in"
-                + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
-                + " as a workaround or restart the kernel"
-                + f" (background: https://github.com/ipython/ipython/issues/12399)."
-            ) from e
+            cls = type(cls_override, (Directory,), {})
+            with warnings.catch_warnings():
+                warnings.simplefilter("always")
+                warnings.warn(
+                    (
+                        "Casting to a new subclass of Directory because "
+                        f'"{cls_override}" can\'t be resolved as it is not found'
+                        + f" inside the current scope of Directory subclasses."
+                        + " This dynamically created subclass allows to view the data"
+                        + " without access to the original class definition and methods."
+                        + " If this happens unexpectedly with autoreload enabled in"
+                        + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
+                        + " as a workaround or restart the kernel"
+                        + f" (background: https://github.com/ipython/ipython/issues/12399)."
+                    ),
+                    ConfigWarning,
+                    stacklevel=2,
+                )
+            # raise KeyError(
+            #     f'"{cls_override}" can\'t be resolved because it is not found'
+            #     + f" inside the current scope of Directory subclasses."
+            #     + " If this happens unexpectedly with autoreload enabled in"
+            #     + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
+            #     + " as a workaround or restart the kernel"
+            #     + f" (background: https://github.com/ipython/ipython/issues/12399)."
+            # ) from e
 
     # Construct and return a Directory instance
     obj = object.__new__(cls)
@@ -1516,6 +1548,7 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
                 _override_to_chunked(path, val)
             else:
                 raise e
+
 
 def _copy_file(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
