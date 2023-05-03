@@ -109,10 +109,10 @@ def test_repr():
 
 
 def test_all():
-    x = Namespace(a = Namespace(b = [1, 2, 3]))
+    x = Namespace(a=Namespace(b=[1, 2, 3]))
     assert x.all()
 
-    x = Namespace(a = Namespace(b = [1, 2, 0]))
+    x = Namespace(a=Namespace(b=[1, 2, 0]))
     assert not x.all()
 
     y = x.deepcopy()
@@ -120,10 +120,10 @@ def test_all():
     assert not y == x
     assert y.all()
 
-    x = Namespace(a = np.arange(3))
-    y = Namespace(a = np.arange(1, 5))
+    x = Namespace(a=np.arange(3))
+    y = Namespace(a=np.arange(1, 5))
     assert not x.all() and y.all()
     assert y != x
 
-    y = Namespace(a = np.arange(3))
+    y = Namespace(a=np.arange(3))
     assert y == x
