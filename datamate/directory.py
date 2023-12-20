@@ -35,6 +35,8 @@ from typing import (
 from typing_extensions import Protocol
 import datetime
 from traceback import format_tb
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 
 from contextlib import contextmanager
@@ -44,11 +46,11 @@ import numpy as np
 from pandas import DataFrame
 
 from datamate.namespaces import (
-    Namespace,
-    namespacify,
     is_disjoint,
     is_superset,
     to_dict,
+    diff,
+    without,
 )
 
 __all__ = ["Directory", "ArrayFile"]
@@ -388,39 +390,34 @@ class Directory(metaclass=NonExistingDirectory):
     path: Path
     config: Config
 
-    def __new__(_type, *args: object, **kwargs: object) -> Any:
+    def __new__(cls, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
-        cls = _directory(_type)
         _check_implementation(cls)
 
-        defaults = get_defaults(cls)
-
-        if config is None and defaults:  # and _implements_init(cls):
-            # to initialize from defaults if no config or path is provided
-            if path is None:
-                config = defaults
-            # to initialize from defaults if no config and empty path is provided
-            elif path is not None and not path.exists():
-                config = defaults
-            # if a non-empty path is provided, we cannot initialize from defaults
-            else:
-                pass
-        # breakpoint()
+        # get default config if available and no/nonexistent path
+        if config is None:
+            if path is None or not path.exists():
+                defaults = get_defaults(cls)
+                if defaults:
+                    config = defaults
+        
         if path is not None and config is None:
-            cls = _directory_from_path(cls, _resolve_path(path))
+            directory = _directory_from_path(cls, _resolve_path(path))
         elif path is None and config is not None:
-            cls = _directory_from_config(cls, config)
+            directory = _directory_from_config(cls, config)
         elif path is not None and config is not None:
-            cls = _directory_from_path_and_config(cls, _resolve_path(path), config)
+            directory = _directory_from_path_and_config(cls, _resolve_path(path), config)
         elif path is None and config is None:
             if _implements_init(cls):
                 # raise ValueError("no configuration provided")
                 pass
+            directory = _directory(cls)
 
         if context.check_size_on_init:
-            cls.check_size()
+            directory.check_size()
 
-        return cls
+        object.__setattr__(directory, "_readers", dict())
+        return directory
 
     def __init__(self):
         """Implement to compile `Directory` from a configuration.
@@ -438,7 +435,7 @@ class Directory(metaclass=NonExistingDirectory):
         cls.__doc__ = _auto_doc(cls)
 
     @property
-    def meta(self) -> Namespace:
+    def meta(self) -> DictConfig:
         """
         The metadata stored in `{self.path}/_meta.yaml`
         """
@@ -554,6 +551,10 @@ class Directory(metaclass=NonExistingDirectory):
         # Return an array.
         if path.with_suffix(".h5").is_file():
             return _read_h5(path.with_suffix(".h5"))
+            # if str(path) not in self._readers:
+            #     reader = _read_h5(path.with_suffix(".h5"))
+            #     self._readers[str(path)] = reader
+            # return self._readers[str(path)]
 
         # Return the path to a file.
         elif path.is_file():
@@ -598,6 +599,8 @@ class Directory(metaclass=NonExistingDirectory):
         else:
             assert path.suffix == ""
             try:
+                if isinstance(val, H5Reader):
+                    val = val[()]
                 _write_h5(path.with_suffix(".h5"), val)
             except TypeError as err:
                 raise TypeError(
@@ -669,6 +672,8 @@ class Directory(metaclass=NonExistingDirectory):
         # Append an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             _extend_h5(path.with_suffix(".h5"), val)
 
         if self.config is not None and self.status == "done":
@@ -729,6 +734,8 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
+        if key.startswith("__") and key.endswith("__"):
+            return None # if it exists, shouldn't get to getattr to begin with
         return self.__getitem__(key.replace("__", "."))
 
     def __setattr__(self, key: str, value: object) -> None:
@@ -775,7 +782,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
 
         current_config = self.config
         if current_config is not None:
@@ -784,7 +791,7 @@ class Directory(metaclass=NonExistingDirectory):
                 warnings.warn(
                     (
                         f"Overriding config. Diff is:"
-                        f'{config.diff(current_config, name1="passed", name2="stored")}'
+                        f'{diff(config, current_config, name1="passed", name2="stored")}'
                     ),
                     ConfigWarning,
                     stacklevel=2,
@@ -797,7 +804,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
 
         current_status = self.status
         if current_status is not None:
@@ -814,7 +821,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
+            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
 
         if is_modified:
             write_meta(config=self.config, status=self.status, modified=True)
@@ -1042,18 +1049,30 @@ def _check_implementation(cls: Directory):
             )
 
 
-def _directory(cls: type) -> Directory:
+def _directory(cls: type, path: Path = None, config: object = {}) -> Directory:
     """
     Return a new Directory at the root of the file tree.
     """
-    directory = _forward_subclass(cls, {})
-    path = _new_directory_path(type(directory))
+    if "type" in config:
+        warnings.warn(
+            "Configs with a `type` attribute are being deprecated in favor "
+            "of hydra-like `_target_` attributes. Please update the config "
+            "when possible."
+        )
+        config["_target_"] = config.pop("type")
+    obj = object.__new__(cls)
+    default_config = get_defaults(cls)
+    default_config.update(config)
+    config = dict(_target_=_identify(type(obj)), **default_config)
+    object.__setattr__(obj, "_config", DictConfig(config))
+    directory = cast(Directory, obj)
+    path = path or _new_directory_path(type(directory))
     object.__setattr__(directory, "_cached_keys", set())
     object.__setattr__(directory, "path", path)
     return directory
 
 
-def _directory_from_path(cls: Directory, path: Path) -> Directory:
+def _directory_from_path(cls: type, path: Path) -> Directory:
     """
     Return a Directory corresponding to the file tree at `path`.
 
@@ -1061,11 +1080,11 @@ def _directory_from_path(cls: Directory, path: Path) -> Directory:
     subtype of `cls`.
     """
 
-    config = read_meta(path).config or {}
-    written_type = get_scope().get(config.get("type", None), None)
-
     if path.is_file():
         raise FileExistsError(f"{path} is a file.")
+
+    config = read_meta(path).config or {}
+    cls = _forward_subclass(cls, config)
 
     # if context.enforce_config_match:
 
@@ -1078,45 +1097,40 @@ def _directory_from_path(cls: Directory, path: Path) -> Directory:
     else:
         pass
 
-    if written_type is not None and not issubclass(written_type, type(cls)):
-        raise FileExistsError(
-            f"{path} is a {written_type.__module__}.{written_type.__qualname__}"
-            f", not a {cls.__module__}.{cls.__qualname__}."
-        )
-
     # if context.enforce_config_match:
-    directory = _forward_subclass(type(cls), config)
+    # directory = _forward_subclass(type(cls), config)
+    directory = _directory(cls, path=path, config=config)
     # else:
     #     directory = _forward_subclass(type(cls), {})
 
-    object.__setattr__(directory, "_cached_keys", set())
-    object.__setattr__(directory, "path", path)
+    # object.__setattr__(directory, "_cached_keys", set())
+    # object.__setattr__(directory, "path", path)
     return directory
 
 
-def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Directory:
+def _directory_from_config(cls: type, config: Mapping[str, object]) -> Directory:
     """
     Find or build a Directory with the given type and config.
     """
-    directory = _forward_subclass(type(cls), conf)
-    new_dir_path = _new_directory_path(type(directory))
-    object.__setattr__(directory, "_cached_keys", set())
-    config = Namespace(**directory._config)
+    cls = _forward_subclass(cls, config)
+    directory = _directory(cls, config=config)
+    new_dir_path = directory.path
+    config = DictConfig({**directory._config})
 
     def _new_directory():
         object.__setattr__(directory, "path", new_dir_path)
         # don't build cause only the type field is populated
-        if list(config.keys()) == ["type"]:
+        if list(config.keys()) == ["_target_"]:
             return directory
         # don't build cause the config matches the defaults and init is not implemented
-        if not _implements_init(cls) and config.without("type") == get_defaults(cls):
+        if not _implements_init(cls) and without(config, "_target_") == get_defaults(cls):
             return directory
         # catches FileExistsError for the case when two processes try to
-        # build the same directory simultaneously
+        # build the same directory simultaneouslycd
         try:
             _build(directory)
         except FileExistsError:
-            return _directory_from_config(cls, conf)
+            return _directory_from_config(cls, config)
         return directory
 
     for path in Path(get_root_dir()).glob("*"):
@@ -1157,31 +1171,30 @@ def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Direct
 
 
 def _directory_from_path_and_config(
-    cls: Directory, path: Path, conf: Mapping[str, object]
+    cls: type, path: Path, config: Mapping[str, object]
 ) -> Directory:
     """
     Find or build a Directory with the given type, path, and config.
     """
-    directory = _forward_subclass(type(cls), conf)
-    object.__setattr__(directory, "_cached_keys", set())
-    object.__setattr__(directory, "path", path)
+    cls = _forward_subclass(cls, config)
+    directory = _directory(cls, path=path, config=config)
 
     if path.exists():
         meta = read_meta(path)
-        config = Namespace({"type": _identify(type(directory)), **directory._config})
+        config = DictConfig({"_target_": _identify(type(directory)), **directory._config})
         if meta.config != config:
             with warnings.catch_warnings():
                 if context.enforce_config_match:
                     raise FileExistsError(
                         f'"{directory.path}" (incompatible config):\n'
-                        f'{config.diff(meta.config, name1="passed", name2="stored")}'
+                        f'{diff(config, meta.config, name1="passed", name2="stored")}'
                     )
                 else:
                     warnings.simplefilter("always")
                     warnings.warn(
                         (
                             f'"{directory.path}" (incompatible config):\n'
-                            f'{config.diff(meta.config, name1="passed", name2="stored")}'
+                            f'{diff(config, meta.config, name1="passed", name2="stored")}'
                         ),
                         Warning,
                         stacklevel=2,
@@ -1193,11 +1206,11 @@ def _directory_from_path_and_config(
             raise FileExistsError(f'"{directory.path}" was stopped mid-build.')
     else:
         # don't build cause only the type field is populated
-        if list(directory._config.keys()) == ["type"]:
+        if list(directory._config.keys()) == ["_target_"]:
             return directory
         # don't build cause the config matches the defaults and init is not implemented
-        if not _implements_init(cls) and directory._config.without(
-            "type"
+        if not _implements_init(cls) and without(directory._config,
+            "_target_"
         ) == get_defaults(cls):
             return directory
         # catches FileExistsError for the case when two processes try to
@@ -1205,7 +1218,7 @@ def _directory_from_path_and_config(
         try:
             _build(directory)
         except FileExistsError:
-            return _directory_from_path_and_config(cls, path, conf)
+            return _directory_from_path_and_config(cls, path, config)
     return directory
 
 
@@ -1223,10 +1236,10 @@ def _build(directory: Directory) -> None:
     directory.path.mkdir(parents=True)
 
     meta_path = directory.path / "_meta.yaml"
-    config = Namespace(**directory._config)
-    write_meta = lambda **kwargs: meta_path.write_text(
-        json.dumps(_identify_elements(kwargs))
-    )
+    config = DictConfig({**directory._config})
+
+    def write_meta(**kwargs):
+        OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
 
     write_meta(config=config, status="running")
 
@@ -1243,7 +1256,7 @@ def _build(directory: Directory) -> None:
                 build_kwargs = {}
             # case 3: __init__(self, foo=1, bar=2) to specify defaults and config
             else:
-                kwargs = namespacify(get_defaults_from_init(directory))
+                kwargs = DictConfig(get_defaults_from_init(directory))
                 assert kwargs
                 build_args = []
                 build_kwargs = {k: directory._config[k] for k in kwargs}
@@ -1342,7 +1355,7 @@ def _new_directory_path(type_: type) -> Path:
     Generate an unused path in the Directory root directory.
     """
     root = Path(get_root_dir())
-    type_name = _identify(type_)
+    type_name = _identify(type_).rpartition('.')[-1]
     for i in itertools.count():
         dst = root / f"{type_name}_{i:04x}"
         if not dst.exists():
@@ -1388,81 +1401,62 @@ def check_size(path: Path, warning_at=20 * 1024**3, print_size=False) -> None:
 
 
 def _forward_subclass(cls: type, config: object = {}) -> object:
-    # Coerce `config` to a `dict`.
-    config = dict(
-        config if isinstance(config, Mapping) else getattr(config, "__dict__", {})
-    )
-
-    # Perform subclass forwarding.
-    cls_override = config.pop("type", None)
-    if isinstance(cls_override, type):
-        cls = cls_override
-    elif isinstance(cls_override, str):
-        try:
-            cls = get_scope()[cls_override]
-        except KeyError as e:
-            cls = type(cls_override, (Directory,), {})
-            with warnings.catch_warnings():
-                warnings.simplefilter("always")
-                warnings.warn(
-                    (
-                        "Casting to a new subclass of Directory because "
-                        f'"{cls_override}" can\'t be resolved as it is not found'
-                        + f" inside the current scope of Directory subclasses."
-                        + " This dynamically created subclass allows to view the data"
-                        + " without access to the original class definition and methods."
-                        + " If this happens unexpectedly with autoreload enabled in"
-                        + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
-                        + " as a workaround or restart the kernel"
-                        + f" (background: https://github.com/ipython/ipython/issues/12399)."
-                    ),
-                    ConfigWarning,
-                    stacklevel=2,
-                )
-            # raise KeyError(
-            #     f'"{cls_override}" can\'t be resolved because it is not found'
-            #     + f" inside the current scope of Directory subclasses."
-            #     + " If this happens unexpectedly with autoreload enabled in"
-            #     + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
-            #     + " as a workaround or restart the kernel"
-            #     + f" (background: https://github.com/ipython/ipython/issues/12399)."
-            # ) from e
-
-    # Construct and return a Directory instance
-    obj = object.__new__(cls)
-    default_config = get_defaults(cls)
-    default_config.update(config)
-    config = Namespace(type=_identify(type(obj)), **default_config)
-    object.__setattr__(obj, "_config", namespacify(config))
-    return cast(Directory, obj)
+    if "_target_" in config:
+        target_key = config.pop("_target_")
+        if target_key == _identify(cls):
+            return cls
+        _target_ = hydra._internal.instantiate._instantiate2._resolve_target(
+            target_key, config._get_full_key(None))
+        if issubclass(_target_, type(cls)):
+            cls = _target_
+        else:
+            raise FileExistsError(
+                f"Config._target_ is {_target_.__module__}.{_target_.__qualname__}"
+                f", not a subclass of {cls.__module__}.{cls.__qualname__}. "
+                f"Please initialize the directory with the correct class or parent class."
+            )
+    return cls
 
 
 # -- I/O -----------------------------------------------------------------------
 
 
+class H5Reader:
+    """Wrapper around h5 read operations to prevent persistent file handles"""
+    def __init__(self, path, assert_swmr=True):
+        self.path = path
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            if assert_swmr:
+                assert f.swmr_mode, "File is not in SWMR mode."
+            assert "data" in f
+            self.shape = f["data"].shape
+            self.dtype = f["data"].dtype
+
+    def __getitem__(self, key):
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            data = f["data"][key]
+        return data
+    
+    def __len__(self):
+        return self.shape[0]
+    
+    def __getattr__(self, key):
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            value = getattr(f["data"], key, None)
+        if value is None:
+            raise AttributeError(f"Attribute {key} not found.")
+        return value
+
+
 def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
     try:
-        f = h5.File(path, "r", libver="latest", swmr=True)
-        if assert_swmr:
-            assert f.swmr_mode, "File is not in SWMR mode."
-        return f["data"]
+        return H5Reader(path, assert_swmr=assert_swmr)
     except OSError as e:
-        print(e)
+        print(f"{path}: {e}")
         if "errno = 2" in str(e):
             raise e
         sleep(0.1)
         return _read_h5(path)
-
-    # try:
-    #     f = h5.File(path, "r", libver="latest", swmr=True)
-    #     assert f.swmr_mode
-    #     return f["data"]
-    # except OSError as e:
-    #     print(e)
-    #     if "errno = 2" in str(e):  # 2 := File not found.
-    #         raise e
-    #     sleep(0.1)
-    #     return _read_h5(path)
 
 
 def _write_h5(path: Path, val: object) -> None:
@@ -1511,7 +1505,7 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
         else:
             dset = f["data"]
     except BlockingIOError as e:
-        print(e)
+        print(f"{path}: {e}")
         if "errno = 11" in str(e) or "errno = 35" in str(
             e
         ):  # 11, 35 := Reource temporarily unavailable
@@ -1577,21 +1571,26 @@ def _extend_file(dst: Path, src: Path) -> None:
             f_dst.write(f_src.read())
 
 
-def read_meta(path: Path) -> Namespace:
+def read_meta(path: Path) -> DictConfig:
     # TODO: Implement caching
     try:
-        # meta = namespacify(yaml.safe_load((path/'_meta.yaml').read_text()))
-        meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
-        assert isinstance(meta, Namespace)
+        # meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
+        try:
+            meta = OmegaConf.load(path / "_meta.yaml")
+        except:
+            meta = DictConfig(json.loads((path / "_meta.yaml").read_text()))
+            warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
+        assert isinstance(meta, DictConfig)
         if hasattr(meta, "config"):
-            assert isinstance(meta.config, Namespace)
+            assert isinstance(meta.config, DictConfig)
         elif hasattr(meta, "spec"):  # for backwards compatibility
-            assert isinstance(meta.spec, Namespace)
+            assert isinstance(meta.spec, DictConfig)
+            warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
             meta["config"] = meta.pop("spec")
         assert isinstance(meta.status, str)
         return meta
     except:
-        return Namespace(config=None, status="done")
+        return DictConfig(dict(config=None, status="done"))
 
 
 def directory_to_dict(directory: Directory) -> dict:
@@ -1733,12 +1732,11 @@ def byte_to_str(obj):
 # -- Scope search --------------------------------------------------------------
 
 
-def _identify(type_: type) -> str:
-    for sym, t in get_scope().items():
-        # comparing t == type_ can yield false in combination with
-        # ipython autoreload, therefore relying on comparing the __qualname__
-        if t.__qualname__ == type_.__qualname__:
-            return sym
+def _identify(type_: type, full=True) -> str:
+    module = type_.__module__
+    if module is None or module == str.__class__.__module__:
+        return type_.__qualname__
+    return module + '.' + type_.__qualname__
 
 
 def _identify_elements(obj: object) -> object:
@@ -1747,6 +1745,6 @@ def _identify_elements(obj: object) -> object:
     elif isinstance(obj, list):
         return [_identify_elements(elem) for elem in obj]
     elif isinstance(obj, dict):
-        return Namespace({k: _identify_elements(obj[k]) for k in obj})
+        return DictConfig({k: _identify_elements(obj[k]) for k in obj})
     else:
         return obj
