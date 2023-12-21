@@ -36,7 +36,7 @@ from typing_extensions import Protocol
 import datetime
 from traceback import format_tb
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 
 
 from contextlib import contextmanager
@@ -46,6 +46,7 @@ import numpy as np
 from pandas import DataFrame
 
 from datamate.namespaces import (
+    Namespace,
     is_disjoint,
     is_superset,
     to_dict,
@@ -435,7 +436,7 @@ class Directory(metaclass=NonExistingDirectory):
         cls.__doc__ = _auto_doc(cls)
 
     @property
-    def meta(self) -> DictConfig:
+    def meta(self) -> Namespace:
         """
         The metadata stored in `{self.path}/_meta.yaml`
         """
@@ -782,7 +783,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
+            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
 
         current_config = self.config
         if current_config is not None:
@@ -804,7 +805,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
+            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
 
         current_status = self.status
         if current_status is not None:
@@ -821,7 +822,7 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         def write_meta(**kwargs):
-            OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
+            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
 
         if is_modified:
             write_meta(config=self.config, status=self.status, modified=True)
@@ -1059,12 +1060,14 @@ def _directory(cls: type, path: Path = None, config: object = {}) -> Directory:
             "of hydra-like `_target_` attributes. Please update the config "
             "when possible."
         )
-        config["_target_"] = config.pop("type")
+        legacy_type = config.pop("type")
+        target_class = get_scope()[legacy_type]
+        config["_target_"] = _identify(target_class)
     obj = object.__new__(cls)
     default_config = get_defaults(cls)
     default_config.update(config)
     config = dict(_target_=_identify(type(obj)), **default_config)
-    object.__setattr__(obj, "_config", DictConfig(config))
+    object.__setattr__(obj, "_config", Namespace(config))
     directory = cast(Directory, obj)
     path = path or _new_directory_path(type(directory))
     object.__setattr__(directory, "_cached_keys", set())
@@ -1115,7 +1118,7 @@ def _directory_from_config(cls: type, config: Mapping[str, object]) -> Directory
     cls = _forward_subclass(cls, config)
     directory = _directory(cls, config=config)
     new_dir_path = directory.path
-    config = DictConfig({**directory._config})
+    config = Namespace(**directory._config)
 
     def _new_directory():
         object.__setattr__(directory, "path", new_dir_path)
@@ -1181,7 +1184,7 @@ def _directory_from_path_and_config(
 
     if path.exists():
         meta = read_meta(path)
-        config = DictConfig({"_target_": _identify(type(directory)), **directory._config})
+        config = Namespace({"_target_": _identify(type(directory)), **directory._config})
         if meta.config != config:
             with warnings.catch_warnings():
                 if context.enforce_config_match:
@@ -1236,10 +1239,10 @@ def _build(directory: Directory) -> None:
     directory.path.mkdir(parents=True)
 
     meta_path = directory.path / "_meta.yaml"
-    config = DictConfig({**directory._config})
+    config = Namespace(**directory._config)
 
     def write_meta(**kwargs):
-        OmegaConf.save(DictConfig(_identify_elements(kwargs)), meta_path)
+        OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
 
     write_meta(config=config, status="running")
 
@@ -1256,7 +1259,7 @@ def _build(directory: Directory) -> None:
                 build_kwargs = {}
             # case 3: __init__(self, foo=1, bar=2) to specify defaults and config
             else:
-                kwargs = DictConfig(get_defaults_from_init(directory))
+                kwargs = Namespace(get_defaults_from_init(directory))
                 assert kwargs
                 build_args = []
                 build_kwargs = {k: directory._config[k] for k in kwargs}
@@ -1571,33 +1574,33 @@ def _extend_file(dst: Path, src: Path) -> None:
             f_dst.write(f_src.read())
 
 
-def read_meta(path: Path) -> DictConfig:
+def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
-        # meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
         try:
             meta = OmegaConf.load(path / "_meta.yaml")
+            meta = Namespace(OmegaConf.to_object(meta))
         except:
-            meta = DictConfig(json.loads((path / "_meta.yaml").read_text()))
+            meta = Namespace(json.loads((path / "_meta.yaml").read_text()))
             warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
-        assert isinstance(meta, DictConfig)
+        assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
-            assert isinstance(meta.config, DictConfig)
+            assert isinstance(meta.config, Namespace)
         elif hasattr(meta, "spec"):  # for backwards compatibility
-            assert isinstance(meta.spec, DictConfig)
+            assert isinstance(meta.spec, Namespace)
             warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
             meta["config"] = meta.pop("spec")
         assert isinstance(meta.status, str)
         return meta
     except:
-        return DictConfig(dict(config=None, status="done"))
+        return Namespace(config=None, status="done")
 
 
 def directory_to_dict(directory: Directory) -> dict:
     dw_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
     return dw_dict
 
@@ -1607,7 +1610,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     df_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
 
     # Get the lengths of all datasets.
@@ -1733,10 +1736,17 @@ def byte_to_str(obj):
 
 
 def _identify(type_: type, full=True) -> str:
-    module = type_.__module__
-    if module is None or module == str.__class__.__module__:
-        return type_.__qualname__
-    return module + '.' + type_.__qualname__
+    if not full:
+        for sym, t in get_scope().items():
+            # comparing t == type_ can yield false in combination with
+            # ipython autoreload, therefore relying on comparing the __qualname__
+            if t.__qualname__ == type_.__qualname__:
+                return sym
+    else:
+        module = type_.__module__
+        if module is None or module == str.__class__.__module__:
+            return type_.__qualname__
+        return module + '.' + type_.__qualname__
 
 
 def _identify_elements(obj: object) -> object:
@@ -1745,6 +1755,6 @@ def _identify_elements(obj: object) -> object:
     elif isinstance(obj, list):
         return [_identify_elements(elem) for elem in obj]
     elif isinstance(obj, dict):
-        return DictConfig({k: _identify_elements(obj[k]) for k in obj})
+        return {k: _identify_elements(obj[k]) for k in obj}
     else:
         return obj

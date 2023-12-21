@@ -10,6 +10,7 @@ import shutil
 
 from datamate import (
     Directory,
+    Namespace,
     set_root_dir,
     get_root_dir,
     root,
@@ -24,7 +25,6 @@ from datamate.directory import (
     _auto_doc,
     H5Reader,
 )
-from omegaconf import DictConfig
 
 # -- Helper functions ----------------------------------------------------------
 
@@ -101,7 +101,7 @@ def test_empty_directory_with_existing_dir(tmp_path: Path) -> None:
         a,
         dict(
             __path__=tmp_path,
-            __conf__=DictConfig(dict(_target_="datamate.Directory")),
+            __conf__=Namespace(dict(_target_="datamate.Directory")),
             __meta__={"config": None, "status": "done"},
         ),
     )
@@ -114,7 +114,7 @@ def test_empty_directory_with_nonexistent_dir(tmp_path: Path) -> None:
         a,
         dict(
             __path__=tmp_path / "new_dir",
-            __conf__=DictConfig(dict(_target_="datamate.Directory")),
+            __conf__=Namespace(dict(_target_="datamate.Directory")),
             __meta__={"config": None, "status": "done"},
         ),
     )
@@ -599,7 +599,7 @@ def test_root_dir_provided(tmp_path, rooted_dir):
     assert rooted_dir_root_path != tmp_path
 
     # case 1: root dir provided in decorator
-    dir = RootedDirectory(DictConfig(dict(start=0, stop=10, step=1)))
+    dir = RootedDirectory(Namespace(dict(start=0, stop=10, step=1)))
     assert_directory_equals(
         dir,
         dict(
@@ -611,7 +611,7 @@ def test_root_dir_provided(tmp_path, rooted_dir):
 
     # case 2: root dir provided and not within context
     set_root_dir(tmp_path)
-    dir = RootedDirectory(DictConfig(dict(start=0, stop=10, step=1)))
+    dir = RootedDirectory(Namespace(dict(start=0, stop=10, step=1)))
     assert_directory_equals(
         dir,
         dict(
@@ -623,7 +623,7 @@ def test_root_dir_provided(tmp_path, rooted_dir):
 
     # case 3: root_dir provided and within context
     with set_root_context(tmp_path):
-        dir = RootedDirectory(DictConfig(dict(start=0, stop=10, step=1)))
+        dir = RootedDirectory(Namespace(dict(start=0, stop=10, step=1)))
         assert_directory_equals(
             dir,
             dict(
@@ -645,7 +645,7 @@ def test_root_dir_not_provided(tmp_path):
 
     # case 4: root dir not provided and not within context
     with pytest.warns(ImplementationWarning):
-        dir = RootedDirectory(DictConfig(dict(start=0, stop=10, step=1)))
+        dir = RootedDirectory(Namespace(dict(start=0, stop=10, step=1)))
     assert_directory_equals(
         dir,
         dict(
@@ -657,7 +657,7 @@ def test_root_dir_not_provided(tmp_path):
     # case 5: root dir not provided and within context
     with set_root_context(tmp_path / "subdir"):
         with pytest.warns(ImplementationWarning):
-            dir = RootedDirectory(DictConfig(dict(start=0, stop=10, step=1)))
+            dir = RootedDirectory(Namespace(dict(start=0, stop=10, step=1)))
         assert_directory_equals(
             dir,
             dict(
@@ -700,7 +700,7 @@ def test_default_config(tmp_path):
         dict(
             __type__=DefaultConfigDir,
             __path__=tmp_path / name,
-            __conf__=DictConfig(dict(_target_="test_directory.DefaultConfigDir", x=2)),
+            __conf__=Namespace(dict(_target_="test_directory.DefaultConfigDir", x=2)),
             __meta__={"config": {"_target_": "test_directory.DefaultConfigDir", "x": 2}, "status": "done"},
             x=np.arange(2),
         ),
@@ -717,7 +717,7 @@ def test_default_config(tmp_path):
         dict(
             __type__=DefaultConfigDir,
             __path__=tmp_path / dir.path.name,
-            __conf__=DictConfig(dict(_target_="test_directory.DefaultConfigDir", x=3)),
+            __conf__=Namespace(dict(_target_="test_directory.DefaultConfigDir", x=3)),
             __meta__={"config": {"_target_": "test_directory.DefaultConfigDir", "x": 3}, "status": "done"},
             x=np.arange(3),
         ),
@@ -731,7 +731,7 @@ def test_default_config(tmp_path):
         dict(
             __type__=DefaultConfigDir,
             __path__=tmp_path / dir.path.name,
-            __conf__=DictConfig(dict(_target_="test_directory.DefaultConfigDir", x=3)),
+            __conf__=Namespace(dict(_target_="test_directory.DefaultConfigDir", x=3)),
             __meta__={"config": {"_target_": "test_directory.DefaultConfigDir", "x": 3}, "status": "done"},
             x=np.arange(3),
         ),
@@ -744,7 +744,7 @@ def test_default_config(tmp_path):
         dict(
             __type__=DefaultConfigDir,
             __path__=tmp_path / "test3",
-            __conf__=DictConfig(dict(_target_="test_directory.DefaultConfigDir", x=2)),
+            __conf__=Namespace(dict(_target_="test_directory.DefaultConfigDir", x=2)),
             __meta__={"config": {"_target_": "test_directory.DefaultConfigDir", "x": 2}, "status": "done"},
             x=np.arange(2),
         ),
@@ -757,7 +757,7 @@ def test_default_config(tmp_path):
         dict(
             __type__=DefaultConfigDir,
             __path__=tmp_path / "test4",
-            __conf__=DictConfig(dict(_target_="test_directory.DefaultConfigDir", x=3)),
+            __conf__=Namespace(dict(_target_="test_directory.DefaultConfigDir", x=3)),
             __meta__={"config": {"_target_": "test_directory.DefaultConfigDir", "x": 3}, "status": "done"},
             x=np.arange(3),
         ),
@@ -775,7 +775,7 @@ def test_default_config(tmp_path):
             dict(
                 __type__=BadImplementation,
                 __path__=tmp_path / dir.path.name,
-                __conf__=DictConfig(dict(_target_="test_directory.BadImplementation")),
+                __conf__=Namespace(dict(_target_="test_directory.BadImplementation")),
                 __meta__={"config": None, "status": "done"},
             ),
         )
@@ -792,7 +792,7 @@ def test_default_config(tmp_path):
             dict(
                 __type__=BadImplementation,
                 __path__=tmp_path / dir.path.name,
-                __conf__=DictConfig(dict(_target_="test_directory.BadImplementation", x=2)),
+                __conf__=Namespace(dict(_target_="test_directory.BadImplementation", x=2)),
                 __meta__={
                     "config": {"_target_": "test_directory.BadImplementation", "x": 2},
                     "status": "done",
@@ -808,7 +808,7 @@ def test_default_config(tmp_path):
             dict(
                 __type__=BadImplementation,
                 __path__=tmp_path / "test10",
-                __conf__=DictConfig(dict(_target_="test_directory.BadImplementation", x=2)),
+                __conf__=Namespace(dict(_target_="test_directory.BadImplementation", x=2)),
                 __meta__={
                     "config": {"_target_": "test_directory.BadImplementation", "x": 2},
                     "status": "done",
@@ -836,13 +836,13 @@ class AutoDocConfigDir(Directory):
     class Config:
         x: int = 2
         y: float = 2.0
-        q = DictConfig(dict(a=1, b=2))
+        q = Namespace(dict(a=1, b=2))
 
 
 class AutoDocInitDir(Directory):
     "Dir to test auto docstring based on config."
 
-    def __init__(self, x: int = 2, y: float = 2.0, q=DictConfig(dict(a=1, b=2))):
+    def __init__(self, x: int = 2, y: float = 2.0, q=Namespace(dict(a=1, b=2))):
         pass
 
 
@@ -850,11 +850,11 @@ class SoloConfigDocDir(Directory):
     class Config:
         x: int = 2
         y: float = 2.0
-        q = DictConfig(dict(a=1, b=2))
+        q = Namespace(dict(a=1, b=2))
 
 
 class SoloInitDocDir(Directory):
-    def __init__(self, x: int = 2, y: float = 2.0, q=DictConfig(dict(a=1, b=2))):
+    def __init__(self, x: int = 2, y: float = 2.0, q=Namespace(dict(a=1, b=2))):
         pass
 
 
@@ -967,7 +967,7 @@ def test_init_from_kwargs(tmp_path):
         dir,
         dict(
             __path__=tmp_path / dir.path.name,
-            __conf__=DictConfig(dict(_target_="test_directory.SmartDir", foo=2, bar=3)),
+            __conf__=Namespace(dict(_target_="test_directory.SmartDir", foo=2, bar=3)),
             __meta__={
                 "config": {"_target_": "test_directory.SmartDir", "foo": 2, "bar": 3},
                 "status": "done",
@@ -982,7 +982,7 @@ def test_init_from_kwargs(tmp_path):
         dir,
         dict(
             __path__=tmp_path / dir.path.name,
-            __conf__=DictConfig(dict(_target_="test_directory.SmartDir", foo=5, bar=1)),
+            __conf__=Namespace(dict(_target_="test_directory.SmartDir", foo=5, bar=1)),
             __meta__={
                 "config": {"_target_": "test_directory.SmartDir", "foo": 5, "bar": 1},
                 "status": "done",
@@ -998,7 +998,7 @@ def test_init_from_kwargs(tmp_path):
         dir,
         dict(
             __path__=tmp_path / name,
-            __conf__=DictConfig(dict(_target_="test_directory.SmartDir", foo=5, bar=1)),
+            __conf__=Namespace(dict(_target_="test_directory.SmartDir", foo=5, bar=1)),
             __meta__={
                 "config": {"_target_": "test_directory.SmartDir", "foo": 5, "bar": 1},
                 "status": "done",
@@ -1036,7 +1036,7 @@ def test_directory_with_config_without_init(tmp_path):
     assert_directory_equals(
         nnd,
         dict(
-            __conf__=DictConfig(dict(_target_="test_directory.NetworkDir", tau=200.0, sigma=0.1)),
+            __conf__=Namespace(dict(_target_="test_directory.NetworkDir", tau=200.0, sigma=0.1)),
             __exists__=False,
         ),
     )
@@ -1046,7 +1046,7 @@ def test_directory_with_config_without_init(tmp_path):
         nnd,
         dict(
             __path__=tmp_path / "test",
-            __conf__=DictConfig(dict(_target_="test_directory.NetworkDir", tau=200.0, sigma=0.1)),
+            __conf__=Namespace(dict(_target_="test_directory.NetworkDir", tau=200.0, sigma=0.1)),
             __exists__=False,
         ),
     )
@@ -1068,7 +1068,7 @@ def test_cross_configs(tmp_path):
     assert_directory_equals(
         dir,
         dict(
-            __conf__=DictConfig(dict(_target_="test_directory.ConIni1", tau=200.0, sigma=0.1)),
+            __conf__=Namespace(dict(_target_="test_directory.ConIni1", tau=200.0, sigma=0.1)),
             __exists__=False,
         ),
     )

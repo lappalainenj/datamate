@@ -6,7 +6,7 @@ It also exports`namespacify`, a function that recursively converts mappings and
 Namespace-like containers in JSON-like objects to `Namespace`s.
 """
 
-from typing import Mapping, Union
+from typing import Mapping, Union, Dict, Any, List, get_origin
 from copy import deepcopy
 from numpy import ndarray
 from pathlib import Path
@@ -15,6 +15,8 @@ from omegaconf import OmegaConf, DictConfig
 import pandas as pd
 
 __all__ = [
+    "Namespace",
+    "namespacify",
     "is_disjoint", 
     "is_subset", 
     "is_superset", 
@@ -27,6 +29,117 @@ __all__ = [
     "diff", 
     "without",
 ]
+
+# -- Namespaces ----------------------------------------------------------------
+
+
+class Namespace(Dict[str, Any]):
+    """
+    A `dict` that supports accessing items as attributes and comparison methods
+    between multiple `Namespace`s.
+    """
+
+    def __init__(self, *args, **kwargs):
+        base = dict(*args, **kwargs)
+        converted = {k: namespacify(v) for k, v in base.items()}
+        super().__init__(converted)
+
+    def __dir__(self) -> List[str]:
+        return list(set([*dict.__dir__(self), *dict.__iter__(self)]))
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return dict.__getitem__(self, key)
+        except KeyError:
+            raise AttributeError(key)
+
+    def __setattr__(self, key: str, val: object) -> None:
+        dict.__setitem__(self, key, val)
+
+    def __delattr__(self, key: str) -> None:
+        dict.__delitem__(self, key)
+
+    @property
+    def __dict__(self) -> dict:  # type: ignore
+        return self
+
+    def __repr__(self) -> str:
+        def single_line_repr(elem: object) -> str:
+            if isinstance(elem, list):
+                return "[" + ", ".join(map(single_line_repr, elem)) + "]"
+            elif isinstance(elem, Namespace):
+                return (
+                    f"{elem.__class__.__name__}("
+                    + ", ".join(f"{k}={single_line_repr(v)}" for k, v in elem.items())
+                    + ")"
+                )
+            else:
+                return repr(elem).replace("\n", " ")
+
+        def repr_in_context(elem: object, curr_col: int, indent: int) -> str:
+            sl_repr = single_line_repr(elem)
+            if len(sl_repr) <= 80 - curr_col:
+                return sl_repr
+            elif isinstance(elem, list):
+                return (
+                    "[\n"
+                    + " " * (indent + 2)
+                    + (",\n" + " " * (indent + 2)).join(
+                        repr_in_context(e, indent + 2, indent + 2) for e in elem
+                    )
+                    + "\n"
+                    + " " * indent
+                    + "]"
+                )
+            elif isinstance(elem, Namespace):
+                return (
+                    f"{elem.__class__.__name__}(\n"
+                    + " " * (indent + 2)
+                    + (",\n" + " " * (indent + 2)).join(
+                        f"{k} = " + repr_in_context(v, indent + 5 + len(k), indent + 2)
+                        for k, v in elem.items()
+                    )
+                    + "\n"
+                    + " " * indent
+                    + ")"
+                )
+            else:
+                return repr(elem)
+
+        return repr_in_context(self, 0, 0)
+
+    def __eq__(self, other):
+        return all_true(compare(namespacify(self), namespacify(other)))
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+def namespacify(obj: object) -> Namespace:
+    """
+    Recursively convert mappings (item access only) and ad-hoc Namespaces
+    (attribute access only) to `Namespace`s (both item and element access).
+    """
+    if isinstance(obj, (type(None), bool, int, float, str, type, bytes)):
+        return obj
+    elif isinstance(obj, Path):
+        return str(obj)
+    elif isinstance(obj, (list, tuple)):
+        return [namespacify(v) for v in obj]
+    elif isinstance(obj, (ndarray)):
+        return [namespacify(v.item()) for v in obj]
+    elif isinstance(obj, Mapping):
+        return Namespace({k: namespacify(obj[k]) for k in obj})
+    elif get_origin(obj) is not None:
+        return obj
+    else:
+        try:
+            return namespacify(vars(obj))
+        except TypeError as e:
+            raise TypeError(f"namespacifying {obj} of type {type(obj)}: {e}.") from e
+        
+
+# -- Utility functions --------------------------------------------------------
 
 
 def is_subset(dict1, dict2):
@@ -76,6 +189,11 @@ def is_disjoint(dict1, dict2):
 def to_dict(obj):
     if isinstance(obj, dict):
         return dict((k, to_dict(v)) for k, v in obj.items())
+    elif isinstance(obj, Namespace):
+        return dict(
+            (k, to_dict(v) if isinstance(v, dict) or isinstance(v, Namespace) else v)
+            for k, v in obj.items()
+        )
     elif isinstance(obj, DictConfig):
         return OmegaConf.to_object(obj)
     else:
@@ -91,7 +209,7 @@ def to_df(obj, name="", separator="."):
 
 
 def depth(cls):
-    if isinstance(cls, (dict, DictConfig)):
+    if isinstance(cls, (dict, Namespace, DictConfig)):
         return 1 + (max(map(depth, cls.values())) if cls else 0)
     return 0
 
@@ -116,7 +234,7 @@ def compare(obj1, obj2):
     elif isinstance(obj1, (ndarray)) and isinstance(obj2, (ndarray)):
         return compare(obj1.tolist(), obj2.tolist())
     elif isinstance(obj1, Mapping) and isinstance(obj2, Mapping):
-        _obj1, _obj2 = obj1.deepcopy(), obj2.deepcopy()
+        _obj1, _obj2 = deepcopy(obj1), deepcopy(obj2)
         out = {}
         for key in (
             set(_obj1.keys())
@@ -128,7 +246,7 @@ def compare(obj1, obj2):
             _obj2.pop(key, None)
         for k in _obj1:
             out[k] = compare(_obj1[k], obj2[k])
-        return DictConfig(out)
+        return Namespace(out)
     elif type(obj1) != type(obj2):
         return False
 
@@ -190,7 +308,7 @@ def diff(obj1, obj2, name1="obj", name2="other"):
             elif v == obj2[k]:
                 pass
                 # diff[k] = None
-            elif isinstance(v, (dict, DictConfig, Mapping)):
+            elif isinstance(v, (dict, Namespace, DictConfig, Mapping)):
                 _parent = f"{parent}.{k}" if parent else f"{k}"
                 _diff(v, obj2[k], parent=_parent)
             else:
@@ -208,7 +326,7 @@ def diff(obj1, obj2, name1="obj", name2="other"):
                 diff2.append(_diff2)
 
     _diff(obj1, obj2)
-    return DictConfig(diff)
+    return Namespace(diff)
 
 
 def without(obj, key: Union[str, list[str]]):
