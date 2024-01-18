@@ -782,9 +782,6 @@ class Directory(metaclass=NonExistingDirectory):
         """
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
-
         current_config = self.config
         if current_config is not None:
             with warnings.catch_warnings():
@@ -797,15 +794,12 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-            write_meta(config=config, status="overridden")
+            write_meta(path=meta_path, config=config, status="overridden")
         else:
-            write_meta(config=config, status=status or self.status)
+            write_meta(path=meta_path, config=config, status=status or self.status)
 
     def _override_status(self, status):
         meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
 
         current_status = self.status
         if current_status is not None:
@@ -816,16 +810,13 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-        write_meta(config=self.config, status=status)
+        write_meta(path=meta_path, config=self.config, status=status)
 
     def _modified_past_init(self, is_modified):
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
-
         if is_modified:
-            write_meta(config=self.config, status=self.status, modified=True)
+            write_meta(path=meta_path, config=self.config, status=self.status, modified=True)
 
     def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
         """Prints the size of the directory in bytes."""
@@ -1066,7 +1057,7 @@ def _directory(cls: type, path: Path = None, config: object = {}) -> Directory:
     obj = object.__new__(cls)
     default_config = get_defaults(cls)
     default_config.update(config)
-    config = dict(_target_=_identify(type(obj)), **default_config)
+    config = {"_target_": _identify(type(obj)), **default_config}
     object.__setattr__(obj, "_config", Namespace(config))
     directory = cast(Directory, obj)
     path = path or _new_directory_path(type(directory))
@@ -1241,10 +1232,7 @@ def _build(directory: Directory) -> None:
     meta_path = directory.path / "_meta.yaml"
     config = Namespace(**directory._config)
 
-    def write_meta(**kwargs):
-        OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), meta_path)
-
-    write_meta(config=config, status="running")
+    write_meta(path=meta_path, config=config, status="running")
 
     try:
         if callable(getattr(type(directory), "__init__", None)):
@@ -1265,9 +1253,9 @@ def _build(directory: Directory) -> None:
                 build_kwargs = {k: directory._config[k] for k in kwargs}
             directory.__init__(*build_args, **build_kwargs)
 
-        write_meta(config=config, status="done")
+        write_meta(path=meta_path, config=config, status="done")
     except BaseException as e:
-        write_meta(config=config, status="stopped")
+        write_meta(path=meta_path, config=config, status="stopped")
         raise e
 
 
@@ -1574,6 +1562,10 @@ def _extend_file(dst: Path, src: Path) -> None:
             f_dst.write(f_src.read())
 
 
+def write_meta(path: Path, **kwargs):
+    OmegaConf.save(OmegaConf.create(_identify_elements(kwargs)), path)
+
+
 def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
@@ -1583,6 +1575,9 @@ def read_meta(path: Path) -> Namespace:
         except:
             meta = Namespace(json.loads((path / "_meta.yaml").read_text()))
             warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
+            resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            if resp.strip().lower() == "y":
+                write_meta(path / "_meta.yaml", **meta)
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
@@ -1590,7 +1585,21 @@ def read_meta(path: Path) -> Namespace:
             assert isinstance(meta.spec, Namespace)
             warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
             meta["config"] = meta.pop("spec")
-        assert isinstance(meta.status, str)
+            resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            if resp.strip().lower() == "y":
+                write_meta(path / "_meta.yaml", **meta)
+            assert isinstance(meta.status, str)
+        if "type" in meta.config:
+            warnings.warn(
+                "Configs with a `type` attribute are being deprecated in favor "
+                "of hydra-like `_target_` attributes. Please update when possible."
+            )
+            legacy_type = meta.config.pop("type")
+            target_class = get_scope()[legacy_type]
+            meta.config["_target_"] = _identify(target_class)
+            resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            if resp.strip().lower() == "y":
+                write_meta(path / "_meta.yaml", **meta)
         return meta
     except:
         return Namespace(config=None, status="done")

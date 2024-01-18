@@ -10,7 +10,7 @@ from typing import Mapping, Union, Dict, Any, List, get_origin
 from copy import deepcopy
 from numpy import ndarray
 from pathlib import Path
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import OmegaConf, DictConfig, ListConfig
 
 import pandas as pd
 
@@ -124,7 +124,7 @@ def namespacify(obj: object) -> Namespace:
         return obj
     elif isinstance(obj, Path):
         return str(obj)
-    elif isinstance(obj, (list, tuple)):
+    elif isinstance(obj, (list, tuple, ListConfig)):
         return [namespacify(v) for v in obj]
     elif isinstance(obj, (ndarray)):
         return [namespacify(v.item()) for v in obj]
