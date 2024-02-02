@@ -84,7 +84,7 @@ class ArrayFile(Protocol):
     A property that corresponds to a single-array HDF5 file
     """
 
-    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset:
+    def __get__(self, obj: object, type_: Optional[type]) -> H5Reader:
         ...
 
     def __set__(self, obj: object, val: object) -> None:
@@ -729,6 +729,8 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
+        if key.startswith("__") and key.endswith("__"): # exclude dunder attributes
+            return None
         return self.__getitem__(key.replace("__", "."))
 
     def __setattr__(self, key: str, value: object) -> None:
@@ -1440,29 +1442,50 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 # -- I/O -----------------------------------------------------------------------
 
 
+class H5Reader:
+    """Wrapper around h5 read operations to prevent persistent file handles"""
+    def __init__(self, path, assert_swmr=True, n_retries=50):
+        self.path = path
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            if assert_swmr:
+                assert f.swmr_mode, "File is not in SWMR mode."
+            assert "data" in f
+            self.shape = f["data"].shape
+            self.dtype = f["data"].dtype
+        self.n_retries = 50
+
+    def __getitem__(self, key):
+        for retry_count in range(self.n_retries):
+            try:
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    data = f["data"][key]
+                break
+            except Exception as e:
+                if retry_count == self.n_retries:
+                    raise e
+                sleep(0.1)
+        return data
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getattr__(self, key):
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            value = getattr(f["data"], key, None)
+        if value is None:
+            raise AttributeError(f"Attribute {key} not found.")
+        return value
+
+
 def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
     try:
-        f = h5.File(path, "r", libver="latest", swmr=True)
-        if assert_swmr:
-            assert f.swmr_mode, "File is not in SWMR mode."
-        return f["data"]
+        return H5Reader(path, assert_swmr=assert_swmr)
     except OSError as e:
-        print(e)
+        print(f"{path}: {e}")
         if "errno = 2" in str(e):
             raise e
         sleep(0.1)
         return _read_h5(path)
-
-    # try:
-    #     f = h5.File(path, "r", libver="latest", swmr=True)
-    #     assert f.swmr_mode
-    #     return f["data"]
-    # except OSError as e:
-    #     print(e)
-    #     if "errno = 2" in str(e):  # 2 := File not found.
-    #         raise e
-    #     sleep(0.1)
-    #     return _read_h5(path)
 
 
 def _write_h5(path: Path, val: object) -> None:
@@ -1487,6 +1510,7 @@ def _write_h5(path: Path, val: object) -> None:
         f["data"] = val
         f.swmr_mode = True
         assert f.swmr_mode
+    f.close()
 
 
 def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -> None:
@@ -1548,13 +1572,13 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
                 _override_to_chunked(path, val)
             else:
                 raise e
+    f.close()
 
 
 def _copy_file(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
-
 
 def _copy_dir(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
@@ -1598,7 +1622,7 @@ def directory_to_dict(directory: Directory) -> dict:
     dw_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
     return dw_dict
 
@@ -1608,7 +1632,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     df_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
 
     # Get the lengths of all datasets.
