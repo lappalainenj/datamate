@@ -35,6 +35,7 @@ from typing import (
 from typing_extensions import Protocol
 import datetime
 from traceback import format_tb
+from ruamel.yaml import YAML
 
 
 from contextlib import contextmanager
@@ -669,6 +670,8 @@ class Directory(metaclass=NonExistingDirectory):
         # Append an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             _extend_h5(path.with_suffix(".h5"), val)
 
         if self.config is not None and self.status == "done":
@@ -729,6 +732,8 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
+        if key.startswith("__") and key.endswith("__"): # exclude dunder attributes
+            return None
         return self.__getitem__(key.replace("__", "."))
 
     def __setattr__(self, key: str, value: object) -> None:
@@ -774,9 +779,6 @@ class Directory(metaclass=NonExistingDirectory):
         """
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
         current_config = self.config
         if current_config is not None:
             with warnings.catch_warnings():
@@ -789,15 +791,12 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-            write_meta(config=config, status="overridden")
+            write_meta(path=meta_path, config=config, status="overridden")
         else:
-            write_meta(config=config, status=status or self.status)
+            write_meta(path=meta_path, config=config, status=status or self.status)
 
     def _override_status(self, status):
         meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
 
         current_status = self.status
         if current_status is not None:
@@ -808,16 +807,13 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-        write_meta(config=self.config, status=status)
+        write_meta(path=meta_path, config=self.config, status=status)
 
     def _modified_past_init(self, is_modified):
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
         if is_modified:
-            write_meta(config=self.config, status=self.status, modified=True)
+            write_meta(path=meta_path, config=self.config, status=self.status, modified=True)
 
     def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
         """Prints the size of the directory in bytes."""
@@ -1224,11 +1220,8 @@ def _build(directory: Directory) -> None:
 
     meta_path = directory.path / "_meta.yaml"
     config = Namespace(**directory._config)
-    write_meta = lambda **kwargs: meta_path.write_text(
-        json.dumps(_identify_elements(kwargs))
-    )
 
-    write_meta(config=config, status="running")
+    write_meta(path=meta_path, config=config, status="running")
 
     try:
         if callable(getattr(type(directory), "__init__", None)):
@@ -1249,9 +1242,9 @@ def _build(directory: Directory) -> None:
                 build_kwargs = {k: directory._config[k] for k in kwargs}
             directory.__init__(*build_args, **build_kwargs)
 
-        write_meta(config=config, status="done")
+        write_meta(path=meta_path, config=config, status="done")
     except BaseException as e:
-        write_meta(config=config, status="stopped")
+        write_meta(path=meta_path, config=config, status="stopped")
         raise e
 
 
@@ -1401,32 +1394,31 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
         try:
             cls = get_scope()[cls_override]
         except KeyError as e:
-            cls = type(cls_override, (Directory,), {})
-            with warnings.catch_warnings():
-                warnings.simplefilter("always")
-                warnings.warn(
-                    (
-                        "Casting to a new subclass of Directory because "
-                        f'"{cls_override}" can\'t be resolved as it is not found'
-                        + f" inside the current scope of Directory subclasses."
-                        + " This dynamically created subclass allows to view the data"
-                        + " without access to the original class definition and methods."
-                        + " If this happens unexpectedly with autoreload enabled in"
-                        + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
-                        + " as a workaround or restart the kernel"
-                        + f" (background: https://github.com/ipython/ipython/issues/12399)."
-                    ),
-                    ConfigWarning,
-                    stacklevel=2,
-                )
-            # raise KeyError(
-            #     f'"{cls_override}" can\'t be resolved because it is not found'
-            #     + f" inside the current scope of Directory subclasses."
-            #     + " If this happens unexpectedly with autoreload enabled in"
-            #     + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
-            #     + " as a workaround or restart the kernel"
-            #     + f" (background: https://github.com/ipython/ipython/issues/12399)."
-            # ) from e
+            try:
+                from importlib import import_module
+                paths = list(cls_override.split("."))
+                cls = import_module(paths[0])
+                for path in paths[1:]:
+                    cls = getattr(cls, path)
+            except:
+                cls = type(cls_override, (Directory,), {})
+                with warnings.catch_warnings():
+                    warnings.simplefilter("always")
+                    warnings.warn(
+                        (
+                            "Casting to a new subclass of Directory because "
+                            f'"{cls_override}" can\'t be resolved as it is not found'
+                            + f" inside the current scope of Directory subclasses."
+                            + " This dynamically created subclass allows to view the data"
+                            + " without access to the original class definition and methods."
+                            + " If this happens unexpectedly with autoreload enabled in"
+                            + " a notebook/IPython session, run `datamate.reset_scope(datamate.Directory)`"
+                            + " as a workaround or restart the kernel"
+                            + f" (background: https://github.com/ipython/ipython/issues/12399)."
+                        ),
+                        ConfigWarning,
+                        stacklevel=2,
+                    )
 
     # Construct and return a Directory instance
     obj = object.__new__(cls)
@@ -1439,30 +1431,42 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
 # -- I/O -----------------------------------------------------------------------
 
+class H5Reader:
+    """Wrapper around h5 read operations to prevent persistent file handles"""
+    def __init__(self, path, assert_swmr=True):
+        self.path = path
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            if assert_swmr:
+                assert f.swmr_mode, "File is not in SWMR mode."
+            assert "data" in f
+            self.shape = f["data"].shape
+            self.dtype = f["data"].dtype
+
+    def __getitem__(self, key):
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            data = f["data"][key]
+        return data
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getattr__(self, key):
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            value = getattr(f["data"], key, None)
+        if value is None:
+            raise AttributeError(f"Attribute {key} not found.")
+        return value
+
 
 def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
     try:
-        f = h5.File(path, "r", libver="latest", swmr=True)
-        if assert_swmr:
-            assert f.swmr_mode, "File is not in SWMR mode."
-        return f["data"]
+        return H5Reader(path, assert_swmr=assert_swmr)
     except OSError as e:
-        print(e)
+        print(f"{path}: {e}")
         if "errno = 2" in str(e):
             raise e
         sleep(0.1)
         return _read_h5(path)
-
-    # try:
-    #     f = h5.File(path, "r", libver="latest", swmr=True)
-    #     assert f.swmr_mode
-    #     return f["data"]
-    # except OSError as e:
-    #     print(e)
-    #     if "errno = 2" in str(e):  # 2 := File not found.
-    #         raise e
-    #     sleep(0.1)
-    #     return _read_h5(path)
 
 
 def _write_h5(path: Path, val: object) -> None:
@@ -1577,18 +1581,37 @@ def _extend_file(dst: Path, src: Path) -> None:
             f_dst.write(f_src.read())
 
 
+def write_meta(path: Path, **kwargs):
+    yaml = YAML()
+    with open(path, "w") as f:
+        yaml.dump(_identify_elements(kwargs), f)
+
+
 def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
-        # meta = namespacify(yaml.safe_load((path/'_meta.yaml').read_text()))
-        meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
+        try:
+            yaml = YAML()
+            with open(path / "_meta.yaml", "r") as f:
+                meta = yaml.load(f)
+            meta = namespacify(meta)
+        except:
+            meta = Namespace(json.loads((path / "_meta.yaml").read_text()))
+            warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
+            # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            # if resp.strip().lower() == "y":
+            #     write_meta(path / "_meta.yaml", **meta)
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
         elif hasattr(meta, "spec"):  # for backwards compatibility
             assert isinstance(meta.spec, Namespace)
+            warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
             meta["config"] = meta.pop("spec")
-        assert isinstance(meta.status, str)
+            # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            # if resp.strip().lower() == "y":
+            #     write_meta(path / "_meta.yaml", **meta)
+            assert isinstance(meta.status, str)
         return meta
     except:
         return Namespace(config=None, status="done")
@@ -1598,7 +1621,7 @@ def directory_to_dict(directory: Directory) -> dict:
     dw_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
     return dw_dict
 
@@ -1608,7 +1631,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     df_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
 
     # Get the lengths of all datasets.
@@ -1747,6 +1770,6 @@ def _identify_elements(obj: object) -> object:
     elif isinstance(obj, list):
         return [_identify_elements(elem) for elem in obj]
     elif isinstance(obj, dict):
-        return Namespace({k: _identify_elements(obj[k]) for k in obj})
+        return {k: _identify_elements(obj[k]) for k in obj}
     else:
         return obj
