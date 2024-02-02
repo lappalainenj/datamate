@@ -23,6 +23,7 @@ from datamate.directory import (
     ImplementationWarning,
     ImplementationError,
     _auto_doc,
+    H5Reader,
 )
 
 # -- Helper functions ----------------------------------------------------------
@@ -83,8 +84,8 @@ def assert_directory_equals(directory: Directory, target: dict) -> None:
 
         else:
             assert (directory.path / k).with_suffix(".h5").is_file()
-            assert isinstance(directory[k], h5.Dataset)
-            assert isinstance(getattr(directory, k), h5.Dataset)
+            assert isinstance(directory[k], H5Reader)
+            assert isinstance(getattr(directory, k), H5Reader)
             assert np.array_equal(directory[k][()], v)
             assert np.array_equal(getattr(directory, k)[()], v)
             assert directory[k].dtype == np.asarray(v).dtype

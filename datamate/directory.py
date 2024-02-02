@@ -84,7 +84,7 @@ class ArrayFile(Protocol):
     A property that corresponds to a single-array HDF5 file
     """
 
-    def __get__(self, obj: object, type_: Optional[type]) -> H5Reader:
+    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset:
         ...
 
     def __set__(self, obj: object, val: object) -> None:
@@ -597,6 +597,8 @@ class Directory(metaclass=NonExistingDirectory):
         # Write an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             try:
                 _write_h5(path.with_suffix(".h5"), val)
             except TypeError as err:
@@ -669,6 +671,8 @@ class Directory(metaclass=NonExistingDirectory):
         # Append an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             _extend_h5(path.with_suffix(".h5"), val)
 
         if self.config is not None and self.status == "done":
