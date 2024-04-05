@@ -42,6 +42,7 @@ from contextlib import contextmanager
 
 import h5py as h5
 import numpy as np
+import pandas as pd
 from pandas import DataFrame
 
 from datamate.namespaces import (
@@ -555,6 +556,10 @@ class Directory(metaclass=NonExistingDirectory):
         # Return an array.
         if path.with_suffix(".h5").is_file():
             return _read_h5(path.with_suffix(".h5"))
+    
+        # Return a csv
+        if path.with_suffix(".csv").is_file():
+            return pd.read_csv(path.with_suffix(".csv"))
 
         # Return the path to a file.
         elif path.is_file():
@@ -598,17 +603,20 @@ class Directory(metaclass=NonExistingDirectory):
         # Write an array.
         else:
             assert path.suffix == ""
-            try:
-                _write_h5(path.with_suffix(".h5"), val)
-            except TypeError as err:
-                raise TypeError(
-                    format_tb(err.__traceback__)[0]
-                    + err.args[0]
-                    + f"\nYou're trying to store {val} which cannot be converted to h5-file in {path}."
-                    + "\nFor reference of supported types, see https://docs.h5py.org/en/stable/faq.html?highlight=types#numpy-object-types"
-                    + "\nE.g. NumPy unicode strings must be converted to 'S' strings and back:"
-                    + "\nfoo.bar = array.astype('S') to store and foo.bar[:].astype('U') to retrieve."
-                ) from None
+            if isinstance(val, DataFrame):
+                val.to_csv(path.with_suffix(".csv"), index=False)
+            else:
+                try:
+                    _write_h5(path.with_suffix(".h5"), val)
+                except TypeError as err:
+                    raise TypeError(
+                        format_tb(err.__traceback__)[0]
+                        + err.args[0]
+                        + f"\nYou're trying to store {val} which cannot be converted to h5-file in {path}."
+                        + "\nFor reference of supported types, see https://docs.h5py.org/en/stable/faq.html?highlight=types#numpy-object-types"
+                        + "\nE.g. NumPy unicode strings must be converted to 'S' strings and back:"
+                        + "\nfoo.bar = array.astype('S') to store and foo.bar[:].astype('U') to retrieve."
+                    ) from None
 
         if self.config is not None and self.status == "done":
             # Track if a Directory has been modified past __init__
@@ -631,6 +639,10 @@ class Directory(metaclass=NonExistingDirectory):
         # Delete an array file.
         if path.with_suffix(".h5").is_file():
             path.with_suffix(".h5").unlink()
+
+        # Delete a csv file.
+        if path.with_suffix(".csv").is_file():
+            path.with_suffix(".csv").unlink()
 
         # Delete a non-array file.
         elif path.is_file():

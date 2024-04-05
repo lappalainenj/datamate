@@ -16,12 +16,15 @@ if __name__ == "__main__":
 
     class Writer(Directory):
         def __init__(self, N=10, sleep=0.01):
+            print(f"writer init: {time.time()}")
             for i in range(N):
                 self.extend("x", [i])
                 time.sleep(sleep)
                 # break writing if all readouts have been written
                 if _check_readouts(self):
+                    print(f"writer check readout: {time.time()}")
                     break
+            print(f"writer done: {time.time()}")
 
     if mode == "write":
         # launch writing process that runs until all readouts have been written
@@ -30,5 +33,7 @@ if __name__ == "__main__":
         # read data and save to readout
         dir = Directory(tmp_path)
         assert dir.status == "running"
+        print(f"read: {time.time()}")
         readout = dir.x[:]
         dir[f"x{args[3]}"] = readout
+        print(f"read done: {time.time()}")

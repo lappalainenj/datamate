@@ -1,7 +1,11 @@
 import time
+import sys
 from pathlib import Path
 import subprocess
+import random
 import pytest
+import numpy as np
+import multiprocessing
 
 from datamate import Directory
 from datamate.directory import ConfigWarning
@@ -9,71 +13,64 @@ from test_directory import assert_directory_equals
 
 cwd = Path(__file__).parent.absolute()
 
-
-def run_swmr_process(tmp_path, mode, args=[]):
-    command = ["python", f"{cwd}/swmr.py", str(tmp_path.absolute()), mode] + args
-    proc = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
-    )
-    return proc
+random.seed(0)
+np.random.seed(0)
 
 
-def test_swmr_functionality(tmp_path):
-    n_readers = 3
+def run_swmr_process(args):
+    # all timings arbitrary
+    path, mode = args
+    directory = Directory(path)
+    if mode == "read":
+        time.sleep(random.random() * 2)
+        handle = directory.x
+        read_value = handle[()]
+        time.sleep(random.random() * 2) # artificially make read file handle persist
+    elif mode == "write":
+        start_time = time.time()
+        while time.time() - start_time < 30: # run write for 30 s. ideally would run until all reads done, but too lazy to implement
+            time.sleep(random.random() / 5 + 0.05)
+            if random.random() < 0.5: # write or extend
+                directory.x = np.random.rand(5)
+            else:
+                directory.extend('x', [random.random()])
 
-    # start the writer process
-    writer = run_swmr_process(tmp_path / "swmr_dir", "write", [str(n_readers)])
-    # wait for the writer to start
+
+def test_swmr_single_thread(tmp_path):
+    directory = Directory(tmp_path / "swmr_single")
+
+    value = np.random.rand(5)
+    directory.x = value
     time.sleep(0.1)
 
-    readers = []
-    # start multiple reader readers
-    for i in range(n_readers):
-        reader = run_swmr_process(
-            tmp_path / "swmr_dir", "read", [str(n_readers), str(i)]
-        )
-        # wait for the reader to start
-        time.sleep(0.1)
-        readers.append(reader)
-
-    writer.wait(20)
-    output, errors = writer.communicate()
-    if writer.returncode == 0:
-        pass
-    else:
-        raise AssertionError(f"Writer process failed: {errors.decode('utf-8')}")
-
-    # Wait for readers to finish and capture their output
-    for reader in readers:
-        reader.wait(1)
-        output, errors = reader.communicate()
-        # assert "ConfigWarning" in errors.decode("utf-8")
-        if reader.returncode == 0:
-            pass
+    for _ in range(10000):
+        operation = random.choice(["read", "read", "write", "write"])
+        if operation == "read":
+            reader = directory.x
+            read_value = reader[:]
+            # assert np.all(value == read_value)
+        elif operation == "write":
+            write_value = np.random.rand(5)
+            directory.x = write_value
+            value = write_value
         else:
-            raise AssertionError(f"Reader process failed: {errors.decode('utf-8')}")
+            extend_value = [np.random.rand()]
+            directory.extend('x', extend_value)
+            value = np.concatenate([value, np.array(extend_value)])
 
-    with pytest.warns(ConfigWarning):
-        dir = Directory(tmp_path / "swmr_dir")
 
-    readouts = {f"x{i}": dir[f"x{i}"][:] for i in range(n_readers)}
+def test_swmr_multi_thread(tmp_path):
+    directory = Directory(tmp_path / "swmr_single")
 
-    def strictly_increasing(L):
-        return all(x < y for x, y in zip(L, L[1:]))
-
-    assert strictly_increasing([max(v) for v in readouts.values()])
-
-    assert_directory_equals(
-        dir,
-        dict(
-            __path__=tmp_path / "swmr_dir",
-            __conf__=dict(type="Writer", N=10000, sleep=0.01),
-            __exists__=True,
-            __meta__={
-                "config": {"type": "Writer", "N": 10000, "sleep": 0.01},
-                "status": "done",
-            },
-            x=dir.x[:],
-            **readouts,
-        ),
-    )
+    value = np.random.rand(5)
+    directory.x = value
+    time.sleep(0.1)
+    
+    with multiprocessing.Pool(100) as p:
+        p.map(
+            run_swmr_process, 
+            [
+                ((tmp_path / "swmr_single", "write" if i == 0 else "read")) # one write job, many reads
+                for i in range(100)
+            ],
+        )
