@@ -24,7 +24,7 @@ def run_swmr_process(tmp_path, mode, args=[]):
 
 
 def test_swmr_single_thread(tmp_path):
-    directory = Directory(tmp_path / "swmr_dir")
+    directory = Directory(tmp_path / "swmr_single")
 
     value = np.random.rand(5)
     directory.x = value
@@ -50,7 +50,7 @@ def test_swmr_multithread(tmp_path):
     n_readers = 3
 
     # start the writer process
-    writer = run_swmr_process(tmp_path / "swmr_dir", "write", [str(n_readers)])
+    writer = run_swmr_process(tmp_path / "swmr_multi", "write", [str(n_readers)])
     # wait for the writer to start
     time.sleep(1.0)
 
@@ -58,7 +58,7 @@ def test_swmr_multithread(tmp_path):
     # start multiple reader readers
     for i in range(n_readers):
         reader = run_swmr_process(
-            tmp_path / "swmr_dir", "read", [str(n_readers), str(i)]
+            tmp_path / "swmr_multi", "read", [str(n_readers), str(i)]
         )
         # wait for the reader to start
         time.sleep(1.0)
@@ -82,7 +82,7 @@ def test_swmr_multithread(tmp_path):
             raise AssertionError(f"Reader process failed: {errors.decode('utf-8')}")
 
     with pytest.warns(ConfigWarning):
-        dir = Directory(tmp_path / "swmr_dir")
+        dir = Directory(tmp_path / "swmr_multi")
 
     readouts = {f"x{i}": dir[f"x{i}"][:] for i in range(n_readers)}
 
@@ -94,7 +94,7 @@ def test_swmr_multithread(tmp_path):
     assert_directory_equals(
         dir,
         dict(
-            __path__=tmp_path / "swmr_dir",
+            __path__=tmp_path / "swmr_multi",
             __conf__=dict(type="Writer", N=10000, sleep=0.01),
             __exists__=True,
             __meta__={
