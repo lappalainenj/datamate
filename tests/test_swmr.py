@@ -31,7 +31,7 @@ def test_swmr_single_thread(tmp_path):
     time.sleep(0.1)
 
     for _ in range(10000):
-        operation = random.choice(["read", "read", "write", "write"])
+        operation = random.choice(["read", "read", "write", "extend"])
         if operation == "read":
             reader = directory.x
             read_value = reader[:]
