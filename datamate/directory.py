@@ -473,7 +473,7 @@ class Directory(metaclass=NonExistingDirectory):
         are ignored.
         """
         for p in self.path.glob("[!_]*"):
-            yield p.name[:-3] if p.suffix == ".h5" else p.name
+            yield p.name.rpartition(".")[0] if p.suffix in [".h5", ".csv"] else p.name
 
     def __copy__(self):
         return Directory(self.path)
@@ -685,8 +685,11 @@ class Directory(metaclass=NonExistingDirectory):
         
         elif isinstance(val, pd.DataFrame):
             assert path.suffix == ""
-            old_df = pd.read_csv(path.with_suffix(".csv"))
-            new_df = pd.concat([old_df, val], axis=0)
+            if path.with_suffix(".csv").is_file():
+                old_df = pd.read_csv(path.with_suffix(".csv"))
+                new_df = pd.concat([old_df, val], axis=0)
+            else:
+                new_df = val
             new_df.to_csv(path.with_suffix(".csv"), index=False)
 
         # Append an array.
