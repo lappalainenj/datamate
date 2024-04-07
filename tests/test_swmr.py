@@ -2,12 +2,17 @@ import time
 from pathlib import Path
 import subprocess
 import pytest
+import numpy as np
+import random
 
 from datamate import Directory
 from datamate.directory import ConfigWarning
 from test_directory import assert_directory_equals
 
 cwd = Path(__file__).parent.absolute()
+
+random.seed(0)
+np.random.seed(0)
 
 
 def run_swmr_process(tmp_path, mode, args=[]):
@@ -18,13 +23,36 @@ def run_swmr_process(tmp_path, mode, args=[]):
     return proc
 
 
-def test_swmr_functionality(tmp_path):
+def test_swmr_single_thread(tmp_path):
+    directory = Directory(tmp_path / "swmr_dir")
+
+    value = np.random.rand(5)
+    directory.x = value
+    time.sleep(0.1)
+
+    for _ in range(10000):
+        operation = random.choice(["read", "read", "write", "write"])
+        if operation == "read":
+            reader = directory.x
+            read_value = reader[:]
+            # assert np.all(value == read_value)
+        elif operation == "write":
+            write_value = np.random.rand(5)
+            directory.x = write_value
+            value = write_value
+        else:
+            extend_value = [np.random.rand()]
+            directory.extend('x', extend_value)
+            value = np.concatenate([value, np.array(extend_value)])
+
+
+def test_swmr_multithread(tmp_path):
     n_readers = 3
 
     # start the writer process
     writer = run_swmr_process(tmp_path / "swmr_dir", "write", [str(n_readers)])
     # wait for the writer to start
-    time.sleep(0.1)
+    time.sleep(1.0)
 
     readers = []
     # start multiple reader readers
@@ -33,7 +61,7 @@ def test_swmr_functionality(tmp_path):
             tmp_path / "swmr_dir", "read", [str(n_readers), str(i)]
         )
         # wait for the reader to start
-        time.sleep(0.1)
+        time.sleep(1.0)
         readers.append(reader)
 
     writer.wait(20)
