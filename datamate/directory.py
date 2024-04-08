@@ -1417,7 +1417,7 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
         cls = cls_override
     elif isinstance(cls_override, str):
         try:
-            if "." in cls_override:  # hydra-style `type`` field
+            if "." in cls_override:  # hydra-style `type` field
                 from importlib import import_module
                 paths = list(cls_override.split("."))
                 cls = import_module(paths[0])
@@ -1484,7 +1484,7 @@ class H5Reader:
                     data = f["data"][key]
                 break
             except Exception as e:
-                if retry_count == self.n_retries:
+                if retry_count == self.n_retries - 1:
                     raise e
                 sleep(0.1)
         return data
