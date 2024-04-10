@@ -1467,7 +1467,7 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
 class H5Reader:
     """Wrapper around h5 read operations to prevent persistent file handles"""
-    def __init__(self, path, assert_swmr=True, n_retries=50):
+    def __init__(self, path, assert_swmr=True, n_retries=10):
         self.path = path
         with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
             if assert_swmr:
@@ -1475,7 +1475,7 @@ class H5Reader:
             assert "data" in f
             self.shape = f["data"].shape
             self.dtype = f["data"].dtype
-        self.n_retries = 50
+        self.n_retries = n_retries
 
     def __getitem__(self, key):
         for retry_count in range(self.n_retries):
@@ -1493,11 +1493,29 @@ class H5Reader:
         return self.shape[0]
 
     def __getattr__(self, key):
-        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
-            value = getattr(f["data"], key, None)
+        # get attribute from underlying h5.Dataset object
+        for retry_count in range(self.n_retries):
+            try:
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    value = getattr(f["data"], key, None)
+                break
+            except Exception as e:
+                if retry_count == self.n_retries - 1:
+                    raise e
+                sleep(0.1)
         if value is None:
             raise AttributeError(f"Attribute {key} not found.")
-        return value
+        # wrap callable attributes to open file before calling function
+        if callable(value):
+            def safe_wrapper(*args, **kwargs):
+                # not trying `n_retries` times here, just for simplicity
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    output = getattr(f["data"], key)(*args, **kwargs)
+                return output
+            return safe_wrapper
+        # otherwise just return value
+        else:
+            return value
 
 
 def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
