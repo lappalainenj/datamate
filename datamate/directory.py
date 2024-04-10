@@ -36,6 +36,7 @@ from typing_extensions import Protocol
 import datetime
 from traceback import format_tb
 from ruamel.yaml import YAML
+from importlib import import_module
 
 
 from contextlib import contextmanager
@@ -1418,7 +1419,6 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
     elif isinstance(cls_override, str):
         try:
             if "." in cls_override:  # hydra-style `type` field
-                from importlib import import_module
                 paths = list(cls_override.split("."))
                 cls = import_module(paths[0])
                 for path in paths[1:]:
@@ -1466,7 +1466,9 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
 
 class H5Reader:
-    """Wrapper around h5 read operations to prevent persistent file handles"""
+    """Wrapper around h5 read operations to prevent persistent file handles
+    by ensuring file handles are open only during each access operation. 
+    """
     def __init__(self, path, assert_swmr=True, n_retries=10):
         self.path = path
         with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
@@ -1645,17 +1647,17 @@ def _extend_file(dst: Path, src: Path) -> None:
 def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
-        try:
-            yaml = YAML()
-            with open(path / "_meta.yaml", "r") as f:
-                meta = yaml.load(f)
-            meta = namespacify(meta)
-        except:  # for backwards compatibility
+        try:  # for backwards compatibility
             meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
             warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
             # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
             # if resp.strip().lower() == "y":
             #     write_meta(path / "_meta.yaml", **meta)
+        except json.decoder.JSONDecodeError as e:
+            yaml = YAML()
+            with open(path / "_meta.yaml", "r") as f:
+                meta = yaml.load(f)
+            meta = namespacify(meta)
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
