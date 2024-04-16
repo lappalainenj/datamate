@@ -5,6 +5,7 @@ from typing import List
 
 import h5py as h5
 import numpy as np
+import pandas as pd
 import pytest
 import shutil
 
@@ -23,6 +24,7 @@ from datamate.directory import (
     ImplementationWarning,
     ImplementationError,
     _auto_doc,
+    H5Reader,
 )
 
 # -- Helper functions ----------------------------------------------------------
@@ -80,11 +82,18 @@ def assert_directory_equals(directory: Directory, target: dict) -> None:
             assert directory[k].read_bytes() == v.read_bytes()
             assert getattr(directory, k).read_bytes() == v.read_bytes()
             assert getattr(directory, k_mod).read_bytes() == v.read_bytes()
+        
+        elif isinstance(v, pd.DataFrame):
+            assert (directory.path / k).with_suffix(".csv").is_file()
+            assert isinstance(directory[k], pd.DataFrame)
+            assert isinstance(getattr(directory, k), pd.DataFrame)
+            assert np.array_equal(directory[k].to_numpy(), v.to_numpy())
+            assert np.array_equal(getattr(directory, k).to_numpy(), v.to_numpy())
 
         else:
             assert (directory.path / k).with_suffix(".h5").is_file()
-            assert isinstance(directory[k], h5.Dataset)
-            assert isinstance(getattr(directory, k), h5.Dataset)
+            assert isinstance(directory[k], H5Reader)
+            assert isinstance(getattr(directory, k), H5Reader)
             assert np.array_equal(directory[k][()], v)
             assert np.array_equal(getattr(directory, k)[()], v)
             assert directory[k].dtype == np.asarray(v).dtype
@@ -166,6 +175,21 @@ def test_array_assignment(tmp_path: Path) -> None:
     )
 
 
+def test_dataframe_assignment(tmp_path: Path) -> None:
+    a = Directory(tmp_path)
+    a.b = pd.DataFrame({"a": [0, 1, 2], "b": [3, 4, 5]})
+    a.b = pd.DataFrame({"a": [3, 4, 5], "b": [0, 1, 2]})
+    a["c"] = pd.DataFrame({"a": [0, 1], "b": [3, 4]})
+    a["c"] = pd.DataFrame({"a": [3, 4], "b": [0, 1]})
+    assert_directory_equals(
+        a,
+        {
+            "b": pd.DataFrame({"a": [3, 4, 5], "b": [0, 1, 2]}),
+            "c": pd.DataFrame({"a": [3, 4], "b": [0, 1]}),
+        },
+    )
+
+
 def test_path_assignment(tmp_path: Path) -> None:
     a = Directory(tmp_path / "directory")
     a.b__bin = data_file(tmp_path / "b0.bin")
@@ -227,6 +251,18 @@ def test_array_extension(tmp_path: Path) -> None:
     b.b = np.uint16([[7, 8], [9, 10]])
     b.extend("b", np.uint16([[11, 12]]))
     assert_directory_equals(b, {"b": np.uint16([[7, 8], [9, 10], [11, 12]])})
+    
+
+def test_dataframe_extension(tmp_path: Path) -> None:
+    a = Directory(tmp_path)
+    a.extend("b", pd.DataFrame({"a": [7, 9], "b": [8, 10]}))
+    a.extend("b", pd.DataFrame({"a": [11], "b": [12]}))
+    assert_directory_equals(a, {"b": pd.DataFrame({"a": [7, 9, 11], "b": [8, 10, 12]})})
+
+    b = Directory(tmp_path)
+    b.b = pd.DataFrame({"a": [7, 9], "b": [8, 10]})
+    b.extend("b", pd.DataFrame({"a": [11], "b": [12]}))
+    assert_directory_equals(b, {"b": pd.DataFrame({"a": [7, 9, 11], "b": [8, 10, 12]})})
 
 
 def test_path_extension(tmp_path: Path) -> None:

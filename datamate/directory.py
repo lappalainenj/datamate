@@ -35,12 +35,15 @@ from typing import (
 from typing_extensions import Protocol
 import datetime
 from traceback import format_tb
+from ruamel.yaml import YAML
+from importlib import import_module
 
 
 from contextlib import contextmanager
 
 import h5py as h5
 import numpy as np
+import pandas as pd
 from pandas import DataFrame
 
 from datamate.namespaces import (
@@ -471,7 +474,7 @@ class Directory(metaclass=NonExistingDirectory):
         are ignored.
         """
         for p in self.path.glob("[!_]*"):
-            yield p.name[:-3] if p.suffix == ".h5" else p.name
+            yield p.name.rpartition(".")[0] if p.suffix in [".h5", ".csv"] else p.name
 
     def __copy__(self):
         return Directory(self.path)
@@ -555,6 +558,10 @@ class Directory(metaclass=NonExistingDirectory):
         if path.with_suffix(".h5").is_file():
             return _read_h5(path.with_suffix(".h5"))
 
+        # Return a csv
+        if path.with_suffix(".csv").is_file():
+            return pd.read_csv(path.with_suffix(".csv"))
+
         # Return the path to a file.
         elif path.is_file():
             return path
@@ -593,10 +600,17 @@ class Directory(metaclass=NonExistingDirectory):
         elif isinstance(val, (Mapping, Directory)):
             assert path.suffix == ""
             MutableMapping.update(Directory(path), val)  # type: ignore
+        
+        # Write a dataframe.
+        elif isinstance(val, DataFrame):
+            assert path.suffix == ""
+            val.to_csv(path.with_suffix(".csv"), index=False)
 
         # Write an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             try:
                 _write_h5(path.with_suffix(".h5"), val)
             except TypeError as err:
@@ -630,6 +644,10 @@ class Directory(metaclass=NonExistingDirectory):
         # Delete an array file.
         if path.with_suffix(".h5").is_file():
             path.with_suffix(".h5").unlink()
+            
+        # Delete a csv file.
+        if path.with_suffix(".csv").is_file():
+            path.with_suffix(".csv").unlink()
 
         # Delete a non-array file.
         elif path.is_file():
@@ -665,10 +683,21 @@ class Directory(metaclass=NonExistingDirectory):
             assert path.suffix == ""
             for k in val:
                 Directory(path).extend(k, val[k])
+        
+        elif isinstance(val, pd.DataFrame):
+            assert path.suffix == ""
+            if path.with_suffix(".csv").is_file():
+                old_df = pd.read_csv(path.with_suffix(".csv"))
+                new_df = pd.concat([old_df, val], axis=0)
+            else:
+                new_df = val
+            new_df.to_csv(path.with_suffix(".csv"), index=False)
 
         # Append an array.
         else:
             assert path.suffix == ""
+            if isinstance(val, H5Reader):
+                val = val[()]
             _extend_h5(path.with_suffix(".h5"), val)
 
         if self.config is not None and self.status == "done":
@@ -729,6 +758,8 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
+        if key.startswith("__") and key.endswith("__"): # exclude dunder attributes
+            return None
         return self.__getitem__(key.replace("__", "."))
 
     def __setattr__(self, key: str, value: object) -> None:
@@ -774,9 +805,6 @@ class Directory(metaclass=NonExistingDirectory):
         """
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
         current_config = self.config
         if current_config is not None:
             with warnings.catch_warnings():
@@ -789,15 +817,12 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-            write_meta(config=config, status="overridden")
+            write_meta(path=meta_path, config=config, status="overridden")
         else:
-            write_meta(config=config, status=status or self.status)
+            write_meta(path=meta_path, config=config, status=status or self.status)
 
     def _override_status(self, status):
         meta_path = self.path / "_meta.yaml"
-
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
 
         current_status = self.status
         if current_status is not None:
@@ -808,16 +833,13 @@ class Directory(metaclass=NonExistingDirectory):
                     ConfigWarning,
                     stacklevel=2,
                 )
-        write_meta(config=self.config, status=status)
+        write_meta(path=meta_path, config=self.config, status=status)
 
     def _modified_past_init(self, is_modified):
         meta_path = self.path / "_meta.yaml"
 
-        def write_meta(**kwargs):
-            meta_path.write_text(json.dumps(_identify_elements(kwargs)))
-
         if is_modified:
-            write_meta(config=self.config, status=self.status, modified=True)
+            write_meta(path=meta_path, config=self.config, status=self.status, modified=True)
 
     def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
         """Prints the size of the directory in bytes."""
@@ -1224,11 +1246,8 @@ def _build(directory: Directory) -> None:
 
     meta_path = directory.path / "_meta.yaml"
     config = Namespace(**directory._config)
-    write_meta = lambda **kwargs: meta_path.write_text(
-        json.dumps(_identify_elements(kwargs))
-    )
 
-    write_meta(config=config, status="running")
+    write_meta(path=meta_path, config=config, status="running")
 
     try:
         if callable(getattr(type(directory), "__init__", None)):
@@ -1249,9 +1268,9 @@ def _build(directory: Directory) -> None:
                 build_kwargs = {k: directory._config[k] for k in kwargs}
             directory.__init__(*build_args, **build_kwargs)
 
-        write_meta(config=config, status="done")
+        write_meta(path=meta_path, config=config, status="done")
     except BaseException as e:
-        write_meta(config=config, status="stopped")
+        write_meta(path=meta_path, config=config, status="stopped")
         raise e
 
 
@@ -1399,7 +1418,13 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
         cls = cls_override
     elif isinstance(cls_override, str):
         try:
-            cls = get_scope()[cls_override]
+            if "." in cls_override:  # hydra-style `type` field
+                paths = list(cls_override.split("."))
+                cls = import_module(paths[0])
+                for path in paths[1:]:
+                    cls = getattr(cls, path)
+            else:  # legacy scope management
+                cls = get_scope()[cls_override]
         except KeyError as e:
             cls = type(cls_override, (Directory,), {})
             with warnings.catch_warnings():
@@ -1440,29 +1465,70 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 # -- I/O -----------------------------------------------------------------------
 
 
+class H5Reader:
+    """Wrapper around h5 read operations to prevent persistent file handles
+    by ensuring file handles are open only during each access operation. 
+    """
+    def __init__(self, path, assert_swmr=True, n_retries=10):
+        self.path = path
+        with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+            if assert_swmr:
+                assert f.swmr_mode, "File is not in SWMR mode."
+            assert "data" in f
+            self.shape = f["data"].shape
+            self.dtype = f["data"].dtype
+        self.n_retries = n_retries
+
+    def __getitem__(self, key):
+        for retry_count in range(self.n_retries):
+            try:
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    data = f["data"][key]
+                break
+            except Exception as e:
+                if retry_count == self.n_retries - 1:
+                    raise e
+                sleep(0.1)
+        return data
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getattr__(self, key):
+        # get attribute from underlying h5.Dataset object
+        for retry_count in range(self.n_retries):
+            try:
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    value = getattr(f["data"], key, None)
+                break
+            except Exception as e:
+                if retry_count == self.n_retries - 1:
+                    raise e
+                sleep(0.1)
+        if value is None:
+            raise AttributeError(f"Attribute {key} not found.")
+        # wrap callable attributes to open file before calling function
+        if callable(value):
+            def safe_wrapper(*args, **kwargs):
+                # not trying `n_retries` times here, just for simplicity
+                with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
+                    output = getattr(f["data"], key)(*args, **kwargs)
+                return output
+            return safe_wrapper
+        # otherwise just return value
+        else:
+            return value
+
+
 def _read_h5(path: Path, assert_swmr=True) -> ArrayFile:
     try:
-        f = h5.File(path, "r", libver="latest", swmr=True)
-        if assert_swmr:
-            assert f.swmr_mode, "File is not in SWMR mode."
-        return f["data"]
+        return H5Reader(path, assert_swmr=assert_swmr)
     except OSError as e:
-        print(e)
+        print(f"{path}: {e}")
         if "errno = 2" in str(e):
             raise e
         sleep(0.1)
         return _read_h5(path)
-
-    # try:
-    #     f = h5.File(path, "r", libver="latest", swmr=True)
-    #     assert f.swmr_mode
-    #     return f["data"]
-    # except OSError as e:
-    #     print(e)
-    #     if "errno = 2" in str(e):  # 2 := File not found.
-    #         raise e
-    #     sleep(0.1)
-    #     return _read_h5(path)
 
 
 def _write_h5(path: Path, val: object) -> None:
@@ -1487,6 +1553,7 @@ def _write_h5(path: Path, val: object) -> None:
         f["data"] = val
         f.swmr_mode = True
         assert f.swmr_mode
+    f.close()
 
 
 def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -> None:
@@ -1548,13 +1615,13 @@ def _extend_h5(path: Path, val: object, retry: int = 0, max_retries: int = 50) -
                 _override_to_chunked(path, val)
             else:
                 raise e
+    f.close()
 
 
 def _copy_file(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
-
 
 def _copy_dir(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
@@ -1580,25 +1647,55 @@ def _extend_file(dst: Path, src: Path) -> None:
 def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
-        # meta = namespacify(yaml.safe_load((path/'_meta.yaml').read_text()))
-        meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
+        try:  # for backwards compatibility
+            meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
+            warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
+            # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            # if resp.strip().lower() == "y":
+            #     write_meta(path / "_meta.yaml", **meta)
+        except json.decoder.JSONDecodeError as e:
+            yaml = YAML()
+            with open(path / "_meta.yaml", "r") as f:
+                meta = yaml.load(f)
+            meta = namespacify(meta)
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
         elif hasattr(meta, "spec"):  # for backwards compatibility
             assert isinstance(meta.spec, Namespace)
+            warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
             meta["config"] = meta.pop("spec")
-        assert isinstance(meta.status, str)
+            # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
+            # if resp.strip().lower() == "y":
+            #     write_meta(path / "_meta.yaml", **meta)
+            assert isinstance(meta.status, str)
         return meta
     except:
         return Namespace(config=None, status="done")
+
+
+def write_meta(path: Path, **kwargs):
+    yaml = YAML()
+    # support dumping numpy objects
+    def represent_numpy_float(self, value):
+        return self.represent_float(float(value))
+    def represent_numpy_int(self, value):
+        return self.represent_int(int(value))
+    def represent_numpy_array(self, value):
+        return self.represent_sequence(value.tolist())
+    yaml.Representer.add_multi_representer(np.ndarray, represent_numpy_array)
+    yaml.Representer.add_multi_representer(np.floating, represent_numpy_float)
+    yaml.Representer.add_multi_representer(np.integer, represent_numpy_int)
+    # dump config to yaml
+    with open(path, "w") as f:
+        yaml.dump(_identify_elements(kwargs), f)
 
 
 def directory_to_dict(directory: Directory) -> dict:
     dw_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
     return dw_dict
 
@@ -1608,7 +1705,7 @@ def directory_to_df(directory: Directory, dtypes: dict = None) -> DataFrame:
     df_dict = {
         key: getattr(directory, key)[...]
         for key in list(directory.keys())
-        if isinstance(getattr(directory, key), h5.Dataset)
+        if isinstance(getattr(directory, key), H5Reader)
     }
 
     # Get the lengths of all datasets.
@@ -1747,6 +1844,6 @@ def _identify_elements(obj: object) -> object:
     elif isinstance(obj, list):
         return [_identify_elements(elem) for elem in obj]
     elif isinstance(obj, dict):
-        return Namespace({k: _identify_elements(obj[k]) for k in obj})
+        return {k: _identify_elements(obj[k]) for k in obj}
     else:
         return obj

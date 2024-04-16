@@ -61,25 +61,6 @@ Because cloud-based and relational database solutions for ML-workflows can be li
 beginner friendly or little flexible, Datamate is simply based on I/O of arrays and configurations on
 disk with pythonic syntax, and it targets interactive and notebook-based workflows.
 
-Datamate plays well with other, more advanced tools for data and experiment management.
-E.g. combine datamate with hydra for dynamic configuration-based workflows with command line integration.
-For a full-fledged cloud-based solution to track ML experiments, check out e.g. wandb.
-
-Other than that, object-relational mappers are frameworks to provide APIs to
-relational databases. This is particularly useful, when handling data over networks.
-E.g. one remote server hosts data that is accessed by many people in collaboration.
-
-ML experiment management:
-
-- [hydra](https://github.com/facebookresearch/hydra), for dynamic configuration management with automatic command line integration.
-- [wandb](https://github.com/wandb), cloud-based experiment running, data logging, and visualization.
-
-Relational databases, object-relational mapper:
-
-- [datajoint](https://github.com/datajoint/datajoint-python), for scientific workflow management based on relational principles.
-- [sqlalchemy](https://github.com/sqlalchemy/sqlalchemy), for fully exposing SQL features and details.
-- [PonyORM](https://github.com/ponyorm/pony), for syntactic sugar when accessing SQL databases.
-
 # Contribution
 
 Contributions welcome!
