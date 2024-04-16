@@ -10,3 +10,4 @@ dist
 build
 *.DS_Store*
 developer/
+datamate/version.py

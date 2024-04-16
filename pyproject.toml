@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "setuptools_scm[toml]>=3.4"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "datamate/version.py"
+fallback_version = "0.1.0"
+
+[project]
+name = "datamate"
+dynamic = ["version"]
+description = "A data organization and compilation system."
+authors = [
+    {name = "Janne K. Lappalainen"},
+    {name = "Mason McGill"}
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+dependencies = [
+    "pandas",
+    "toolz",
+    "numpy",
+    "typing_extensions",
+    "h5py>=3.6.0",
+    "ipython<8.5",
+    "notebook",
+    "ipywidgets",
+    "tqdm",
+    "matplotlib",
+    "ruamel.yaml"
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "pre-commit",
+    "jupyter",
+    "setuptools_scm"
+]
+
+[tool.setuptools.packages.find]
+include=["datamate"]
+
+[tool.black]
+line-length = 88  
+
+[[tool.pre-commit.repos]]
+repo = "https://github.com/psf/black"
+rev = "24.1.1"
+hooks = [
+    { id = "black", language_version = "python3" }
+]
