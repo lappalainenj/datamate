@@ -1680,12 +1680,12 @@ def write_meta(path: Path, **kwargs):
     def represent_numpy_float(self, value):
         return self.represent_float(float(value))
     def represent_numpy_int(self, value):
-        return self.represent_intt(int(value))
+        return self.represent_int(int(value))
     def represent_numpy_array(self, value):
         return self.represent_sequence(value.tolist())
-    yaml.Representer.add_representer(np.ndarray, represent_numpy_array)
-    yaml.Representer.add_representer(np.floating, represent_numpy_float)
-    yaml.Representer.add_representer(np.integer, represent_numpy_int)
+    yaml.Representer.add_multi_representer(np.ndarray, represent_numpy_array)
+    yaml.Representer.add_multi_representer(np.floating, represent_numpy_float)
+    yaml.Representer.add_multi_representer(np.integer, represent_numpy_int)
     # dump config to yaml
     with open(path, "w") as f:
         yaml.dump(_identify_elements(kwargs), f)
