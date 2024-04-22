@@ -411,8 +411,7 @@ class Directory(metaclass=NonExistingDirectory):
     def __new__(_type, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
 
-        if path is not None and path.exists():
-            assert isinstance(path, Path)
+        if path is not None and isinstance(path, Path) and path.exists():
             if context.delete_if_exists:
                 shutil.rmtree(path)
 
