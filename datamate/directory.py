@@ -11,7 +11,6 @@ as attribute type annotations within `Directory` subclass definition.
 import os
 import warnings
 import itertools
-import json
 from pathlib import Path
 import shutil
 import functools
@@ -1647,17 +1646,10 @@ def _extend_file(dst: Path, src: Path) -> None:
 def read_meta(path: Path) -> Namespace:
     # TODO: Implement caching
     try:
-        try:  # for backwards compatibility
-            meta = namespacify(json.loads((path / "_meta.yaml").read_text()))
-            warnings.warn(f"Directory {path} still has legacy JSON config. Please update to YAML when possible.")
-            # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
-            # if resp.strip().lower() == "y":
-            #     write_meta(path / "_meta.yaml", **meta)
-        except json.decoder.JSONDecodeError as e:
-            yaml = YAML()
-            with open(path / "_meta.yaml", "r") as f:
-                meta = yaml.load(f)
-            meta = namespacify(meta)
+        yaml = YAML()
+        with open(path / "_meta.yaml", "r") as f:
+            meta = yaml.load(f)
+        meta = namespacify(meta)
         assert isinstance(meta, Namespace)
         if hasattr(meta, "config"):
             assert isinstance(meta.config, Namespace)
