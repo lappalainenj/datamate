@@ -412,8 +412,20 @@ class Directory(metaclass=NonExistingDirectory):
         path, config = _parse_directory_args(args, kwargs)
 
         if path is not None and isinstance(path, Path) and path.exists():
+            # case 1: path exists and global context is deleting if exists
             if context.delete_if_exists:
                 shutil.rmtree(path)
+            # case 2: path exists and local kwargs are deleting if exists
+            if (
+                config is not None
+                and "delete_if_exists" in config
+                and config["delete_if_exists"]
+            ):
+                shutil.rmtree(path)
+
+            if config is not None and "delete_if_exists" in config:
+                # always remove the deletion flag from the config
+                config.pop("delete_if_exists")
 
         cls = _directory(_type)
         _check_implementation(cls)

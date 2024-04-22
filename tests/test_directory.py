@@ -1218,7 +1218,7 @@ def test_delete_if_exists(tmp_path):
     set_root_dir(tmp_path)
 
     name = "test"
-    dir = DefaultConfigDir(name)
+    dir = DefaultConfigDir(name, x=2)
     assert_directory_equals(
         dir,
         dict(
@@ -1248,3 +1248,30 @@ def test_delete_if_exists(tmp_path):
                 x=np.arange(3),
             ),
         )
+
+    with pytest.raises(FileExistsError):
+        dir = DefaultConfigDir(name, x=2)
+
+    dir = DefaultConfigDir(name, x=2, delete_if_exists=True)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
+
+    dir = DefaultConfigDir(name, x=2, delete_if_exists=False)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
