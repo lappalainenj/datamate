@@ -215,7 +215,7 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
 
 
 @contextmanager
-def delete_if_exists():
+def delete_if_exists(enable: bool = True):
     """Delete directory if it exists within a context and revert after.
 
     Example:
@@ -225,7 +225,7 @@ def delete_if_exists():
     Note, takes precendecence over all other methods to control the root
         directory.
     """
-    context.delete_if_exists = True
+    context.delete_if_exists = enable
     try:
         yield
     finally:
@@ -1199,24 +1199,15 @@ def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Direct
                     warnings.simplefilter("always")
                     warnings.warn(
                         (
-                            f"The Directory {path} has been modified after being build."
-                            + f"\nBuilding a new directory {new_dir_path} to prevent that the files you would get from the object"
-                            + " mismatch the files you would expect based on your __init__ and configuration."
-                            + "\nYou can circumvent this"
-                            + " by e.g. using the explicit path as constructor (see Directory docs)."
+                            f"Skipping Directory {path}, which has been modified after "
+                            " being build."
+                            + "\nYou can use the explicit path as constructor (see "
+                            " Directory docs)."
                         ),
                         ModifiedWarning,
                         stacklevel=2,
                     )
-                return _new_directory()
-            # raise ModifiedError(
-            #             f"The Directory {path} has been modified after being build."
-            #             + "\nThis could mean that the files you would get from the object"
-            #             + " mismatch the files you would expect based on your configuration."
-            #             + "\nYou can circumvent this error"
-            #             + " by e.g. using the path as constructor"
-            #             + " as explained in the Directory docs."
-            #         )
+                continue
 
             while meta.status == "running":
                 sleep(0.01)
