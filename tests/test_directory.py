@@ -25,7 +25,10 @@ from datamate.directory import (
     ImplementationError,
     _auto_doc,
     H5Reader,
+    DirectoryDiff,
 )
+from datamate import directory
+from datamate.namespaces import namespacify
 
 # -- Helper functions ----------------------------------------------------------
 
@@ -82,7 +85,7 @@ def assert_directory_equals(directory: Directory, target: dict) -> None:
             assert directory[k].read_bytes() == v.read_bytes()
             assert getattr(directory, k).read_bytes() == v.read_bytes()
             assert getattr(directory, k_mod).read_bytes() == v.read_bytes()
-        
+
         elif isinstance(v, pd.DataFrame):
             assert (directory.path / k).with_suffix(".csv").is_file()
             assert isinstance(directory[k], pd.DataFrame)
@@ -251,7 +254,7 @@ def test_array_extension(tmp_path: Path) -> None:
     b.b = np.uint16([[7, 8], [9, 10]])
     b.extend("b", np.uint16([[11, 12]]))
     assert_directory_equals(b, {"b": np.uint16([[7, 8], [9, 10], [11, 12]])})
-    
+
 
 def test_dataframe_extension(tmp_path: Path) -> None:
     a = Directory(tmp_path)
@@ -1117,3 +1120,80 @@ def test_cross_configs(tmp_path):
 
             def __init__(self, sigma=2):
                 pass
+
+
+class CompDir(Directory):
+    class Config:
+        x: int = 2
+
+    def __init__(self, x: int = 2):
+        self.x = x
+
+
+# --- test directory comparison
+
+
+def test_comparison(tmp_path):
+    set_root_dir(tmp_path)
+
+    a = CompDir()
+    b = CompDir()
+    directory.assert_equal_directories(a, b)
+    assert a.path == b.path
+
+    a = CompDir("a")
+    b = CompDir("b")
+    directory.assert_equal_directories(a, b)
+    assert a.path != b.path
+
+    b = CompDir(x=3)
+    with pytest.raises(AssertionError):
+        directory.assert_equal_directories(a, b)
+
+    b.x = 2
+    with pytest.raises(AssertionError):
+        directory.assert_equal_attributes(a, b)
+
+
+def test_diff(tmp_path):
+    set_root_dir(tmp_path)
+
+    a = CompDir()
+    b = CompDir(x=3)
+    diff = DirectoryDiff(a, b)
+    assert not diff.equal()
+    assert a != b
+
+    a = CompDir("a")
+    b = CompDir("b")
+    np.savez(b.y.path, np.ones(10))
+    diff = DirectoryDiff(a, b)
+    assert not diff.equal()
+    assert a != b
+
+    a = CompDir("aa")
+    b = CompDir("bb")
+    np.savez(a.y.path, np.ones(10))
+    np.savez(b.y.path, np.ones(10))
+    diff = DirectoryDiff(a, b)
+    assert diff.equal()
+    assert a == b
+
+    df = pd.DataFrame(np.random.rand(10, 2), columns=["a", "b"])
+    a = CompDir("aaa")
+    b = CompDir("bbb")
+    a.df = df
+    b.df = df
+    diff = DirectoryDiff(a, b)
+    assert diff.equal()
+    assert a == b
+
+    df1 = pd.DataFrame(np.random.rand(10, 2), columns=["a", "b"])
+    df2 = pd.DataFrame(np.random.rand(10, 2), columns=["a", "b"])
+    a = CompDir("aaaa")
+    b = CompDir("bbbb")
+    a.df = df1
+    b.df = df2
+    diff = DirectoryDiff(a, b)
+    assert not diff.equal()
+    assert a != b

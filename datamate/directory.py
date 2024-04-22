@@ -8,6 +8,7 @@ collections of arrays.
 This module also exports `ArrayFile` a descriptor protocol intended to be used
 as attribute type annotations within `Directory` subclass definition.
 """
+
 import os
 import warnings
 import itertools
@@ -53,7 +54,7 @@ from datamate.namespaces import (
     to_dict,
 )
 
-__all__ = ["Directory", "ArrayFile"]
+__all__ = ["Directory", "DirectoryDiff", "ArrayFile"]
 
 # -- Custom Errors and Warnings ------------------------------------------------
 
@@ -86,11 +87,9 @@ class ArrayFile(Protocol):
     A property that corresponds to a single-array HDF5 file
     """
 
-    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset:
-        ...
+    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset: ...
 
-    def __set__(self, obj: object, val: object) -> None:
-        ...
+    def __set__(self, obj: object, val: object) -> None: ...
 
 
 NoneType = type(None)
@@ -599,7 +598,7 @@ class Directory(metaclass=NonExistingDirectory):
         elif isinstance(val, (Mapping, Directory)):
             assert path.suffix == ""
             MutableMapping.update(Directory(path), val)  # type: ignore
-        
+
         # Write a dataframe.
         elif isinstance(val, DataFrame):
             assert path.suffix == ""
@@ -643,7 +642,7 @@ class Directory(metaclass=NonExistingDirectory):
         # Delete an array file.
         if path.with_suffix(".h5").is_file():
             path.with_suffix(".h5").unlink()
-            
+
         # Delete a csv file.
         if path.with_suffix(".csv").is_file():
             path.with_suffix(".csv").unlink()
@@ -655,6 +654,26 @@ class Directory(metaclass=NonExistingDirectory):
         # Delete a Directory.
         else:
             shutil.rmtree(path, ignore_errors=True)
+
+    def __eq__(self, other: object) -> bool:
+        """
+        Returns True if `self` and `other` are equal, False otherwise.
+
+        Two Directorys are equal if they have the same keys and the same
+        values for each key.
+        """
+        if not isinstance(other, Directory):
+            raise ValueError(f"Cannot compare Directory to {type(other)}")
+
+        if self.path == other.path:
+            return True
+
+        if self.path != other.path:
+            diff = DirectoryDiff(self, other)
+            return diff.equal(fail=False)
+
+    def __neq__(self, other: object) -> bool:
+        return not self.__eq__(other)
 
     def extend(self, key: str, val: object) -> None:
         """
@@ -682,7 +701,7 @@ class Directory(metaclass=NonExistingDirectory):
             assert path.suffix == ""
             for k in val:
                 Directory(path).extend(k, val[k])
-        
+
         elif isinstance(val, pd.DataFrame):
             assert path.suffix == ""
             if path.with_suffix(".csv").is_file():
@@ -757,7 +776,7 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
-        if key.startswith("__") and key.endswith("__"): # exclude dunder attributes
+        if key.startswith("__") and key.endswith("__"):  # exclude dunder attributes
             return None
         return self.__getitem__(key.replace("__", "."))
 
@@ -838,7 +857,9 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         if is_modified:
-            write_meta(path=meta_path, config=self.config, status=self.status, modified=True)
+            write_meta(
+                path=meta_path, config=self.config, status=self.status, modified=True
+            )
 
     def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
         """Prints the size of the directory in bytes."""
@@ -897,6 +918,164 @@ class Directory(metaclass=NonExistingDirectory):
         for file in self.path.iterdir():
             if file.is_file() and file.suffix == suffix:
                 file.unlink()
+
+
+# -- Directory comparison ------------------------------------------------------
+
+
+class DirectoryDiff:
+    def __init__(self, directory1, directory2, name1=None, name2=None):
+        self.directory1 = directory1
+        self.directory2 = directory2
+        self.name1 = name1 or self.directory1.path.name
+        self.name2 = name2 or self.directory2.path.name
+
+    def equal(self, fail=False):
+        try:
+            assert_equal_directories(self.directory1, self.directory2)
+            return True
+        except AssertionError as e:
+            if fail:
+                raise AssertionError from e
+            return False
+
+    def diff(self, invert=False):
+        if invert:
+            return self._diff_directories(self.directory2, self.directory1)
+        return self._diff_directories(self.directory1, self.directory2)
+
+    def config_diff(self):
+        return self.directory1.config.diff(
+            self.directory2.config, name1=self.name1, name2=self.name2
+        )
+
+    def _diff_directories(self, dir1, dir2, parent=""):
+        diffs = {self.name1: [], self.name2: []}
+
+        keys1 = set(dir1.keys())
+        keys2 = set(dir2.keys())
+
+        # Check for keys only in dir1
+        for key in keys1 - keys2:
+            val = dir1[key]
+            if isinstance(val, H5Reader):
+                val = val[()]
+            diffs[self.name1].append(self._format_diff("+", key, val, parent))
+            diffs[self.name2].append(self._format_diff("-", key, val, parent))
+
+        # Check for keys only in dir2
+        for key in keys2 - keys1:
+            val = dir2[key]
+            if isinstance(val, H5Reader):
+                val = val[()]
+            diffs[self.name2].append(self._format_diff("+", key, val, parent))
+            diffs[self.name1].append(self._format_diff("-", key, val, parent))
+
+        # Check for keys present in both
+        for key in keys1 & keys2:
+            val1 = dir1[key]
+            val2 = dir2[key]
+            if isinstance(val1, Directory) and isinstance(val2, Directory):
+                child_diffs = self._diff_directories(
+                    val1, val2, f"{parent}.{key}" if parent else key
+                )
+                diffs[self.name1].extend(child_diffs[self.name1])
+                diffs[self.name2].extend(child_diffs[self.name2])
+
+            elif isinstance(val1, H5Reader) and isinstance(val2, H5Reader):
+                val1 = val1[()]
+                val2 = val2[()]
+                equal = np.array_equal(val1, val2)
+                equal = equal & (type(val1) == type(val2))
+                equal = equal & (val1.dtype == val2.dtype)
+                if not equal:
+                    diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                    diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+            elif isinstance(val1, pd.DataFrame) and isinstance(val2, pd.DataFrame):
+                equal = val1.equals(val2)
+                if not equal:
+                    diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                    diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+            elif val1 != val2:
+                diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+        return diffs
+
+    def _format_diff(self, symbol, key, value, parent):
+        full_key = f"{parent}.{key}" if parent else key
+        return f"{symbol}{full_key}: {value}"
+
+
+def assert_equal_attributes(directory: Directory, target: Directory) -> None:
+    if directory.path == target.path:
+        return
+    assert type(directory) == type(target)
+    assert directory._config == target._config
+    assert directory.meta == target.meta
+    assert directory.__doc__ == target.__doc__
+    assert directory.path.exists() == target.path.exists()
+
+
+def assert_equal_directories(directory: Directory, target: Directory) -> None:
+    assert_equal_attributes(directory, target)
+
+    assert len(directory) == len(target)
+    assert len(list(directory)) == len(list(target))
+
+    keys1 = set(directory.keys())
+    keys2 = set(target.keys())
+    assert keys1 == keys2
+
+    for k in keys1 & keys2:
+        assert k in directory and k in target
+        assert k in list(directory) and k in list(target)
+        assert hasattr(directory, k) and hasattr(target, k)
+
+        v1 = directory[k]
+        v2 = target[k]
+
+        if isinstance(v1, Directory):
+            assert isinstance(v2, Directory)
+            assert isinstance(getattr(directory, k), Directory) and isinstance(
+                getattr(target, k), Directory
+            )
+            assert_equal_directories(v1, v2)
+            assert_equal_directories(getattr(directory, k), v1)
+            assert_equal_directories(getattr(target, k), v2)
+
+        elif isinstance(v1, Path):
+            assert isinstance(v2, Path)
+            assert isinstance(getattr(directory, k), Path) and isinstance(
+                getattr(target, k), Path
+            )
+            assert v1.read_bytes() == v2.read_bytes()
+            assert getattr(directory, k).read_bytes() == v1.read_bytes()
+            assert getattr(target, k).read_bytes() == v2.read_bytes()
+
+        elif isinstance(v1, pd.DataFrame):
+            assert isinstance(v2, pd.DataFrame)
+            assert isinstance(getattr(directory, k), pd.DataFrame) and isinstance(
+                getattr(target, k), pd.DataFrame
+            )
+            assert v1.equals(v2)
+            assert getattr(directory, k).equals(v1)
+            assert getattr(target, k).equals(v2)
+
+        else:
+            assert isinstance(v1, H5Reader)
+            assert isinstance(v2, H5Reader)
+            assert isinstance(getattr(directory, k), H5Reader) and isinstance(
+                getattr(target, k), H5Reader
+            )
+            assert np.array_equal(v1[()], v2[()])
+            assert np.array_equal(getattr(directory, k)[()], v1[()])
+            assert np.array_equal(getattr(target, k)[()], v2[()])
+            assert v1.dtype == v2.dtype
+            assert getattr(directory, k).dtype == v1.dtype
+            assert getattr(target, k).dtype == v2.dtype
 
 
 # -- Directory construction -----------------------------------------------------
@@ -1256,7 +1435,12 @@ def _build(directory: Directory) -> None:
                 build_args = []
                 build_kwargs = {}
             # case 2: __init__(self, config)
-            elif n_build_args == 2:
+            elif n_build_args == 2 and any(
+                [
+                    vn in ["config", "conf"]
+                    for vn in directory.__init__.__code__.co_varnames
+                ]
+            ):
                 build_args = [directory._config]
                 build_kwargs = {}
             # case 3: __init__(self, foo=1, bar=2) to specify defaults and config
@@ -1265,6 +1449,9 @@ def _build(directory: Directory) -> None:
                 assert kwargs
                 build_args = []
                 build_kwargs = {k: directory._config[k] for k in kwargs}
+
+            # import pdb; pdb.set_trace()
+
             directory.__init__(*build_args, **build_kwargs)
 
         write_meta(path=meta_path, config=config, status="done")
@@ -1359,6 +1546,7 @@ def _new_directory_path(type_: type) -> Path:
     """
     Generate an unused path in the Directory root directory.
     """
+    # import pdb;pdb.set_trace()
     root = Path(get_root_dir())
     type_name = _identify(type_)
     for i in itertools.count():
@@ -1466,8 +1654,9 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
 class H5Reader:
     """Wrapper around h5 read operations to prevent persistent file handles
-    by ensuring file handles are open only during each access operation. 
+    by ensuring file handles are open only during each access operation.
     """
+
     def __init__(self, path, assert_swmr=True, n_retries=10):
         self.path = path
         with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
@@ -1508,11 +1697,13 @@ class H5Reader:
             raise AttributeError(f"Attribute {key} not found.")
         # wrap callable attributes to open file before calling function
         if callable(value):
+
             def safe_wrapper(*args, **kwargs):
                 # not trying `n_retries` times here, just for simplicity
                 with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
                     output = getattr(f["data"], key)(*args, **kwargs)
                 return output
+
             return safe_wrapper
         # otherwise just return value
         else:
@@ -1622,6 +1813,7 @@ def _copy_file(dst: Path, src: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
 
+
 def _copy_dir(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1655,7 +1847,9 @@ def read_meta(path: Path) -> Namespace:
             assert isinstance(meta.config, Namespace)
         elif hasattr(meta, "spec"):  # for backwards compatibility
             assert isinstance(meta.spec, Namespace)
-            warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
+            warnings.warn(
+                f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible."
+            )
             meta["config"] = meta.pop("spec")
             # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
             # if resp.strip().lower() == "y":
@@ -1668,13 +1862,17 @@ def read_meta(path: Path) -> Namespace:
 
 def write_meta(path: Path, **kwargs):
     yaml = YAML()
+
     # support dumping numpy objects
     def represent_numpy_float(self, value):
         return self.represent_float(float(value))
+
     def represent_numpy_int(self, value):
         return self.represent_int(int(value))
+
     def represent_numpy_array(self, value):
         return self.represent_sequence(value.tolist())
+
     yaml.Representer.add_multi_representer(np.ndarray, represent_numpy_array)
     yaml.Representer.add_multi_representer(np.floating, represent_numpy_float)
     yaml.Representer.add_multi_representer(np.integer, represent_numpy_int)
