@@ -101,6 +101,7 @@ context = threading.local()
 context.enforce_config_match = True
 context.check_size_on_init = False
 context.verbosity_level = 2
+context.delete_if_exists = False
 # context.in_memory = False
 
 
@@ -211,6 +212,24 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
     finally:
         set_root_dir(_root_dir)
         context.within_root_context = False
+
+
+@contextmanager
+def delete_if_exists():
+    """Delete directory if it exists within a context and revert after.
+
+    Example:
+        with delete_if_exists():
+            Directory(config)
+
+    Note, takes precendecence over all other methods to control the root
+        directory.
+    """
+    context.delete_if_exists = True
+    try:
+        yield
+    finally:
+        context.delete_if_exists = False
 
 
 # @contextmanager
@@ -391,6 +410,12 @@ class Directory(metaclass=NonExistingDirectory):
 
     def __new__(_type, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
+
+        if path is not None and path.exists():
+            assert isinstance(path, Path)
+            if context.delete_if_exists:
+                shutil.rmtree(path)
+
         cls = _directory(_type)
         _check_implementation(cls)
 
@@ -1183,6 +1208,10 @@ def _parse_directory_args(
     elif len(args) == 1 and isinstance(args[0], Mapping) and len(kwargs) == 0:
         return None, dict(args[0])
 
+    # (config=conf)
+    elif len(args) == 0 and len(kwargs) == 1 and "config" in kwargs:
+        return None, kwargs["config"]
+
     # (**conf)
     elif len(args) == 0 and len(kwargs) > 0:
         return None, kwargs
@@ -1219,9 +1248,30 @@ def _parse_directory_args(
         root_dir = get_root_dir()
         return root_dir / args[0], dict(args[1])
 
+    # (path, config=conf)
+    elif (
+        len(args) == 1
+        and isinstance(args[0], Path)
+        and len(kwargs) == 1
+        and "config" in kwargs
+    ):
+        return Path(args[0]), kwargs["config"]
+
     # (path, **conf)
     elif len(args) == 1 and isinstance(args[0], Path) and len(kwargs) > 0:
         return Path(args[0]), kwargs
+
+    # (str, config=conf)
+    elif (
+        len(args) == 1
+        and isinstance(args[0], str)
+        and len(kwargs) == 1
+        and "config" in kwargs
+    ):
+        if args[0][0] in [".", "..", "~", "@"]:
+            return Path(args[0]), kwargs["config"]
+        root_dir = get_root_dir()
+        return root_dir / args[0], kwargs["config"]
 
     # (str, **conf)
     elif len(args) == 1 and isinstance(args[0], str) and len(kwargs) > 0:

@@ -1102,6 +1102,12 @@ class ConIni1(Directory):
 
 
 def test_cross_configs(tmp_path):
+    """Test that default config and init kwargs are merged.
+
+    Raises error if default config and init kwargs are not compatible.
+    """
+    set_root_dir(tmp_path)
+
     dir = ConIni1()
     assert_directory_equals(
         dir,
@@ -1203,3 +1209,42 @@ def test_diff(tmp_path):
     b = Directory("bbbbb")
     b.x = 2
     assert a.diff(b) == {"aaaaa": ["≠x: 3"], "bbbbb": ["≠x: 2"]}
+
+
+# --- test delete_if_exists context manager
+
+
+def test_delete_if_exists(tmp_path):
+    set_root_dir(tmp_path)
+
+    name = "test"
+    dir = DefaultConfigDir(name)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
+
+    with pytest.raises(FileExistsError):
+        dir2 = DefaultConfigDir(name, config=dict(x=3))
+
+    with directory.delete_if_exists():
+        dir2 = DefaultConfigDir(name, config=dict(x=3))
+        assert_directory_equals(
+            dir2,
+            dict(
+                __type__=DefaultConfigDir,
+                __path__=tmp_path / name,
+                __conf__=Namespace(type="DefaultConfigDir", x=3),
+                __meta__={
+                    "config": {"type": "DefaultConfigDir", "x": 3},
+                    "status": "done",
+                },
+                x=np.arange(3),
+            ),
+        )
