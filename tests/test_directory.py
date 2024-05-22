@@ -1197,3 +1197,9 @@ def test_diff(tmp_path):
     diff = DirectoryDiff(a, b)
     assert not diff.equal()
     assert a != b
+
+    a = Directory("aaaaa")
+    a.x = 3
+    b = Directory("bbbbb")
+    b.x = 2
+    assert a.diff(b) == {"aaaaa": ["≠x: 3"], "bbbbb": ["≠x: 2"]}

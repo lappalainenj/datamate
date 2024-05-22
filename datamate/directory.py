@@ -675,6 +675,17 @@ class Directory(metaclass=NonExistingDirectory):
     def __neq__(self, other: object) -> bool:
         return not self.__eq__(other)
 
+    def diff(self, other: object) -> Dict[str, List[str]]:
+        """
+        Returns a dictionary of differences between `self` and `other`.
+
+        The dictionary has two keys, the name of `self` and the name of `other`.
+        The values are lists of strings, each string representing a difference
+        between the corresponding entries in `self` and `other`.
+        """
+        diff = DirectoryDiff(self, other)
+        return diff.diff()
+
     def extend(self, key: str, val: object) -> None:
         """
         Extends an `ArrayFile`, `Path`, or `Directory` at `self.path/key`
@@ -924,13 +935,24 @@ class Directory(metaclass=NonExistingDirectory):
 
 
 class DirectoryDiff:
-    def __init__(self, directory1, directory2, name1=None, name2=None):
+    """Compare two directories for equality or differences."""
+
+    def __init__(
+        self,
+        directory1: Directory,
+        directory2: Directory,
+        name1: str = None,
+        name2: str = None,
+    ):
         self.directory1 = directory1
         self.directory2 = directory2
         self.name1 = name1 or self.directory1.path.name
         self.name2 = name2 or self.directory2.path.name
 
-    def equal(self, fail=False):
+    def equal(self, fail: bool = False) -> bool:
+        """Return True if the directories are equal, False otherwise.
+
+        If fail is True, raise the AssertionError if the directories are not equal."""
         try:
             assert_equal_directories(self.directory1, self.directory2)
             return True
@@ -939,17 +961,21 @@ class DirectoryDiff:
                 raise AssertionError from e
             return False
 
-    def diff(self, invert=False):
+    def diff(self, invert: bool = False) -> Dict[str, List[str]]:
+        """Return a dictionary of differences between the directories."""
         if invert:
             return self._diff_directories(self.directory2, self.directory1)
         return self._diff_directories(self.directory1, self.directory2)
 
-    def config_diff(self):
+    def config_diff(self) -> Dict[str, List[str]]:
+        """Return the differences between the configurations of the directories."""
         return self.directory1.config.diff(
             self.directory2.config, name1=self.name1, name2=self.name2
         )
 
-    def _diff_directories(self, dir1, dir2, parent=""):
+    def _diff_directories(
+        self, dir1: Directory, dir2: Directory, parent=""
+    ) -> Dict[str, List[str]]:
         diffs = {self.name1: [], self.name2: []}
 
         keys1 = set(dir1.keys())
@@ -1010,6 +1036,7 @@ class DirectoryDiff:
 
 
 def assert_equal_attributes(directory: Directory, target: Directory) -> None:
+    """Assert that two directories have equal attributes."""
     if directory.path == target.path:
         return
     assert type(directory) == type(target)
@@ -1020,6 +1047,7 @@ def assert_equal_attributes(directory: Directory, target: Directory) -> None:
 
 
 def assert_equal_directories(directory: Directory, target: Directory) -> None:
+    """Assert that two directories are equal."""
     assert_equal_attributes(directory, target)
 
     assert len(directory) == len(target)
