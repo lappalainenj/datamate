@@ -16,18 +16,13 @@ authors = [
 readme = "README.md"
 license = {file = "LICENSE"}
 dependencies = [
-    "pandas",
-    "toolz",
     "numpy",
+    "pandas",
     "typing_extensions",
     "h5py>=3.6.0",
-    "ipython<8.5",
-    "notebook",
-    "ipywidgets",
-    "tqdm",
-    "matplotlib",
     "ruamel.yaml"
 ]
+
 
 [project.optional-dependencies]
 dev = [
@@ -36,6 +31,14 @@ dev = [
     "jupyter",
     "setuptools_scm",
     "pytest"
+]
+notebook = [
+    "ipython",
+    "notebook",
+    "ipywidgets",
+    "tqdm",
+    "matplotlib",
+    "toolz"
 ]
 
 [tool.setuptools.packages.find]
