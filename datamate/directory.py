@@ -54,7 +54,8 @@ from datamate.namespaces import (
     to_dict,
 )
 
-__all__ = ["Directory", "ArrayFile"]
+__all__ = ["Directory", "DirectoryDiff", "ArrayFile"]
+__all__ = ["Directory", "DirectoryDiff", "ArrayFile"]
 
 # -- Custom Errors and Warnings ------------------------------------------------
 
@@ -691,6 +692,37 @@ class Directory(metaclass=NonExistingDirectory):
         else:
             shutil.rmtree(path, ignore_errors=True)
 
+    def __eq__(self, other: object) -> bool:
+        """
+        Returns True if `self` and `other` are equal, False otherwise.
+
+        Two Directorys are equal if they have the same keys and the same
+        values for each key.
+        """
+        if not isinstance(other, Directory):
+            raise ValueError(f"Cannot compare Directory to {type(other)}")
+
+        if self.path == other.path:
+            return True
+
+        if self.path != other.path:
+            diff = DirectoryDiff(self, other)
+            return diff.equal(fail=False)
+
+    def __neq__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def diff(self, other: object) -> Dict[str, List[str]]:
+        """
+        Returns a dictionary of differences between `self` and `other`.
+
+        The dictionary has two keys, the name of `self` and the name of `other`.
+        The values are lists of strings, each string representing a difference
+        between the corresponding entries in `self` and `other`.
+        """
+        diff = DirectoryDiff(self, other)
+        return diff.diff()
+
     def extend(self, key: str, val: object) -> None:
         """
         Extends an `ArrayFile`, `Path`, or `Directory` at `self.path/key`
@@ -934,6 +966,181 @@ class Directory(metaclass=NonExistingDirectory):
         for file in self.path.iterdir():
             if file.is_file() and file.suffix == suffix:
                 file.unlink()
+
+
+# -- Directory comparison ------------------------------------------------------
+
+
+class DirectoryDiff:
+    """Compare two directories for equality or differences."""
+
+    def __init__(
+        self,
+        directory1: Directory,
+        directory2: Directory,
+        name1: str = None,
+        name2: str = None,
+    ):
+        self.directory1 = directory1
+        self.directory2 = directory2
+        self.name1 = name1 or self.directory1.path.name
+        self.name2 = name2 or self.directory2.path.name
+
+    def equal(self, fail: bool = False) -> bool:
+        """Return True if the directories are equal, False otherwise.
+
+        If fail is True, raise the AssertionError if the directories are not equal."""
+        try:
+            assert_equal_directories(self.directory1, self.directory2)
+            return True
+        except AssertionError as e:
+            if fail:
+                raise AssertionError from e
+            return False
+
+    def diff(self, invert: bool = False) -> Dict[str, List[str]]:
+        """Return a dictionary of differences between the directories."""
+        if invert:
+            return self._diff_directories(self.directory2, self.directory1)
+        return self._diff_directories(self.directory1, self.directory2)
+
+    def config_diff(self) -> Dict[str, List[str]]:
+        """Return the differences between the configurations of the directories."""
+        return self.directory1.config.diff(
+            self.directory2.config, name1=self.name1, name2=self.name2
+        )
+
+    def _diff_directories(
+        self, dir1: Directory, dir2: Directory, parent=""
+    ) -> Dict[str, List[str]]:
+        diffs = {self.name1: [], self.name2: []}
+
+        keys1 = set(dir1.keys())
+        keys2 = set(dir2.keys())
+
+        # Check for keys only in dir1
+        for key in keys1 - keys2:
+            val = dir1[key]
+            if isinstance(val, H5Reader):
+                val = val[()]
+            diffs[self.name1].append(self._format_diff("+", key, val, parent))
+            diffs[self.name2].append(self._format_diff("-", key, val, parent))
+
+        # Check for keys only in dir2
+        for key in keys2 - keys1:
+            val = dir2[key]
+            if isinstance(val, H5Reader):
+                val = val[()]
+            diffs[self.name2].append(self._format_diff("+", key, val, parent))
+            diffs[self.name1].append(self._format_diff("-", key, val, parent))
+
+        # Check for keys present in both
+        for key in keys1 & keys2:
+            val1 = dir1[key]
+            val2 = dir2[key]
+            if isinstance(val1, Directory) and isinstance(val2, Directory):
+                child_diffs = self._diff_directories(
+                    val1, val2, f"{parent}.{key}" if parent else key
+                )
+                diffs[self.name1].extend(child_diffs[self.name1])
+                diffs[self.name2].extend(child_diffs[self.name2])
+
+            elif isinstance(val1, H5Reader) and isinstance(val2, H5Reader):
+                val1 = val1[()]
+                val2 = val2[()]
+                equal = np.array_equal(val1, val2)
+                equal = equal & (type(val1) == type(val2))
+                equal = equal & (val1.dtype == val2.dtype)
+                if not equal:
+                    diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                    diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+            elif isinstance(val1, pd.DataFrame) and isinstance(val2, pd.DataFrame):
+                equal = val1.equals(val2)
+                if not equal:
+                    diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                    diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+            elif val1 != val2:
+                diffs[self.name1].append(self._format_diff("≠", key, val1, parent))
+                diffs[self.name2].append(self._format_diff("≠", key, val2, parent))
+
+        return diffs
+
+    def _format_diff(self, symbol, key, value, parent):
+        full_key = f"{parent}.{key}" if parent else key
+        return f"{symbol}{full_key}: {value}"
+
+
+def assert_equal_attributes(directory: Directory, target: Directory) -> None:
+    """Assert that two directories have equal attributes."""
+    if directory.path == target.path:
+        return
+    assert type(directory) == type(target)
+    assert directory._config == target._config
+    assert directory.meta == target.meta
+    assert directory.__doc__ == target.__doc__
+    assert directory.path.exists() == target.path.exists()
+
+
+def assert_equal_directories(directory: Directory, target: Directory) -> None:
+    """Assert that two directories are equal."""
+    assert_equal_attributes(directory, target)
+
+    assert len(directory) == len(target)
+    assert len(list(directory)) == len(list(target))
+
+    keys1 = set(directory.keys())
+    keys2 = set(target.keys())
+    assert keys1 == keys2
+
+    for k in keys1 & keys2:
+        assert k in directory and k in target
+        assert k in list(directory) and k in list(target)
+        assert hasattr(directory, k) and hasattr(target, k)
+
+        v1 = directory[k]
+        v2 = target[k]
+
+        if isinstance(v1, Directory):
+            assert isinstance(v2, Directory)
+            assert isinstance(getattr(directory, k), Directory) and isinstance(
+                getattr(target, k), Directory
+            )
+            assert_equal_directories(v1, v2)
+            assert_equal_directories(getattr(directory, k), v1)
+            assert_equal_directories(getattr(target, k), v2)
+
+        elif isinstance(v1, Path):
+            assert isinstance(v2, Path)
+            assert isinstance(getattr(directory, k), Path) and isinstance(
+                getattr(target, k), Path
+            )
+            assert v1.read_bytes() == v2.read_bytes()
+            assert getattr(directory, k).read_bytes() == v1.read_bytes()
+            assert getattr(target, k).read_bytes() == v2.read_bytes()
+
+        elif isinstance(v1, pd.DataFrame):
+            assert isinstance(v2, pd.DataFrame)
+            assert isinstance(getattr(directory, k), pd.DataFrame) and isinstance(
+                getattr(target, k), pd.DataFrame
+            )
+            assert v1.equals(v2)
+            assert getattr(directory, k).equals(v1)
+            assert getattr(target, k).equals(v2)
+
+        else:
+            assert isinstance(v1, H5Reader)
+            assert isinstance(v2, H5Reader)
+            assert isinstance(getattr(directory, k), H5Reader) and isinstance(
+                getattr(target, k), H5Reader
+            )
+            assert np.array_equal(v1[()], v2[()])
+            assert np.array_equal(getattr(directory, k)[()], v1[()])
+            assert np.array_equal(getattr(target, k)[()], v2[()])
+            assert v1.dtype == v2.dtype
+            assert getattr(directory, k).dtype == v1.dtype
+            assert getattr(target, k).dtype == v2.dtype
 
 
 # -- Directory construction -----------------------------------------------------
@@ -1309,7 +1516,12 @@ def _build(directory: Directory) -> None:
                 build_args = []
                 build_kwargs = {}
             # case 2: __init__(self, config)
-            elif n_build_args == 2:
+            elif n_build_args == 2 and any(
+                [
+                    vn in ["config", "conf"]
+                    for vn in directory.__init__.__code__.co_varnames
+                ]
+            ):
                 build_args = [directory._config]
                 build_kwargs = {}
             # case 3: __init__(self, foo=1, bar=2) to specify defaults and config
@@ -1318,6 +1530,9 @@ def _build(directory: Directory) -> None:
                 assert kwargs
                 build_args = []
                 build_kwargs = {k: directory._config[k] for k in kwargs}
+
+            # import pdb; pdb.set_trace()
+
             directory.__init__(*build_args, **build_kwargs)
 
         write_meta(path=meta_path, config=config, status="done")
@@ -1412,6 +1627,7 @@ def _new_directory_path(type_: type) -> Path:
     """
     Generate an unused path in the Directory root directory.
     """
+    # import pdb;pdb.set_trace()
     root = Path(get_root_dir())
     type_name = _identify(type_)
     for i in itertools.count():

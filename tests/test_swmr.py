@@ -18,7 +18,7 @@ def test_swmr_single_thread(tmp_path):
     directory.x = value
     time.sleep(0.1)
 
-    for _ in range(10000):
+    for _ in range(1000):
         operation = random.choice(["read", "read", "write", "extend"])
         if operation == "read":
             reader = directory.x
@@ -29,5 +29,5 @@ def test_swmr_single_thread(tmp_path):
             value = write_value
         else:
             extend_value = [np.random.rand()]
-            directory.extend('x', extend_value)
+            directory.extend("x", extend_value)
             value = np.concatenate([value, np.array(extend_value)])

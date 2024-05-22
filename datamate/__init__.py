@@ -4,6 +4,7 @@ A data organization and compilation system.
 
 from datamate.directory import (
     Directory,
+    DirectoryDiff,
     ArrayFile,
     set_root_dir,
     get_root_dir,
@@ -18,7 +19,7 @@ from datamate.directory import (
 from datamate.namespaces import Namespace, namespacify
 from datamate.version import __version__
 
-__all__ = ["ArrayFile", "Directory", "Namespace", "__version__"]
+__all__ = ["ArrayFile", "Directory", "DirectoryDiff", "Namespace", "__version__"]
 
 # -- `__module__` rebinding ----------------------------------------------------
 
