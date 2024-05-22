@@ -26,6 +26,7 @@ from datamate.directory import (
     _auto_doc,
     H5Reader,
 )
+from datamate import directory
 
 # -- Helper functions ----------------------------------------------------------
 
@@ -82,7 +83,7 @@ def assert_directory_equals(directory: Directory, target: dict) -> None:
             assert directory[k].read_bytes() == v.read_bytes()
             assert getattr(directory, k).read_bytes() == v.read_bytes()
             assert getattr(directory, k_mod).read_bytes() == v.read_bytes()
-        
+
         elif isinstance(v, pd.DataFrame):
             assert (directory.path / k).with_suffix(".csv").is_file()
             assert isinstance(directory[k], pd.DataFrame)
@@ -251,7 +252,7 @@ def test_array_extension(tmp_path: Path) -> None:
     b.b = np.uint16([[7, 8], [9, 10]])
     b.extend("b", np.uint16([[11, 12]]))
     assert_directory_equals(b, {"b": np.uint16([[7, 8], [9, 10], [11, 12]])})
-    
+
 
 def test_dataframe_extension(tmp_path: Path) -> None:
     a = Directory(tmp_path)
@@ -1099,6 +1100,12 @@ class ConIni1(Directory):
 
 
 def test_cross_configs(tmp_path):
+    """Test that default config and init kwargs are merged.
+
+    Raises error if default config and init kwargs are not compatible.
+    """
+    set_root_dir(tmp_path)
+
     dir = ConIni1()
     assert_directory_equals(
         dir,
@@ -1117,3 +1124,69 @@ def test_cross_configs(tmp_path):
 
             def __init__(self, sigma=2):
                 pass
+
+
+# --- test delete_if_exists context manager
+
+
+def test_delete_if_exists(tmp_path):
+    set_root_dir(tmp_path)
+
+    name = "test"
+    dir = DefaultConfigDir(name, x=2)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
+
+    with pytest.raises(FileExistsError):
+        dir2 = DefaultConfigDir(name, config=dict(x=3))
+
+    with directory.delete_if_exists():
+        dir2 = DefaultConfigDir(name, config=dict(x=3))
+        assert_directory_equals(
+            dir2,
+            dict(
+                __type__=DefaultConfigDir,
+                __path__=tmp_path / name,
+                __conf__=Namespace(type="DefaultConfigDir", x=3),
+                __meta__={
+                    "config": {"type": "DefaultConfigDir", "x": 3},
+                    "status": "done",
+                },
+                x=np.arange(3),
+            ),
+        )
+
+    with pytest.raises(FileExistsError):
+        dir = DefaultConfigDir(name, x=2)
+
+    dir = DefaultConfigDir(name, x=2, delete_if_exists=True)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )
+
+    dir = DefaultConfigDir(name, x=2, delete_if_exists=False)
+    assert_directory_equals(
+        dir,
+        dict(
+            __type__=DefaultConfigDir,
+            __path__=tmp_path / name,
+            __conf__=Namespace(type="DefaultConfigDir", x=2),
+            __meta__={"config": {"type": "DefaultConfigDir", "x": 2}, "status": "done"},
+            x=np.arange(2),
+        ),
+    )

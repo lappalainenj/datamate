@@ -8,6 +8,7 @@ collections of arrays.
 This module also exports `ArrayFile` a descriptor protocol intended to be used
 as attribute type annotations within `Directory` subclass definition.
 """
+
 import os
 import warnings
 import itertools
@@ -86,11 +87,9 @@ class ArrayFile(Protocol):
     A property that corresponds to a single-array HDF5 file
     """
 
-    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset:
-        ...
+    def __get__(self, obj: object, type_: Optional[type]) -> h5.Dataset: ...
 
-    def __set__(self, obj: object, val: object) -> None:
-        ...
+    def __set__(self, obj: object, val: object) -> None: ...
 
 
 NoneType = type(None)
@@ -102,6 +101,7 @@ context = threading.local()
 context.enforce_config_match = True
 context.check_size_on_init = False
 context.verbosity_level = 2
+context.delete_if_exists = False
 # context.in_memory = False
 
 
@@ -212,6 +212,24 @@ def set_root_context(root_dir: Union[str, Path, NoneType] = None):
     finally:
         set_root_dir(_root_dir)
         context.within_root_context = False
+
+
+@contextmanager
+def delete_if_exists(enable: bool = True):
+    """Delete directory if it exists within a context and revert after.
+
+    Example:
+        with delete_if_exists():
+            Directory(config)
+
+    Note, takes precendecence over all other methods to control the root
+        directory.
+    """
+    context.delete_if_exists = enable
+    try:
+        yield
+    finally:
+        context.delete_if_exists = False
 
 
 # @contextmanager
@@ -392,6 +410,23 @@ class Directory(metaclass=NonExistingDirectory):
 
     def __new__(_type, *args: object, **kwargs: object) -> Any:
         path, config = _parse_directory_args(args, kwargs)
+
+        if path is not None and isinstance(path, Path) and path.exists():
+            # case 1: path exists and global context is deleting if exists
+            if context.delete_if_exists:
+                shutil.rmtree(path)
+            # case 2: path exists and local kwargs are deleting if exists
+            if (
+                config is not None
+                and "delete_if_exists" in config
+                and config["delete_if_exists"]
+            ):
+                shutil.rmtree(path)
+
+            if config is not None and "delete_if_exists" in config:
+                # always remove the deletion flag from the config
+                config.pop("delete_if_exists")
+
         cls = _directory(_type)
         _check_implementation(cls)
 
@@ -599,7 +634,7 @@ class Directory(metaclass=NonExistingDirectory):
         elif isinstance(val, (Mapping, Directory)):
             assert path.suffix == ""
             MutableMapping.update(Directory(path), val)  # type: ignore
-        
+
         # Write a dataframe.
         elif isinstance(val, DataFrame):
             assert path.suffix == ""
@@ -643,7 +678,7 @@ class Directory(metaclass=NonExistingDirectory):
         # Delete an array file.
         if path.with_suffix(".h5").is_file():
             path.with_suffix(".h5").unlink()
-            
+
         # Delete a csv file.
         if path.with_suffix(".csv").is_file():
             path.with_suffix(".csv").unlink()
@@ -682,7 +717,7 @@ class Directory(metaclass=NonExistingDirectory):
             assert path.suffix == ""
             for k in val:
                 Directory(path).extend(k, val[k])
-        
+
         elif isinstance(val, pd.DataFrame):
             assert path.suffix == ""
             if path.with_suffix(".csv").is_file():
@@ -757,7 +792,7 @@ class Directory(metaclass=NonExistingDirectory):
     # -- Attribute-style element access --------------------
 
     def __getattr__(self, key: str) -> Any:
-        if key.startswith("__") and key.endswith("__"): # exclude dunder attributes
+        if key.startswith("__") and key.endswith("__"):  # exclude dunder attributes
             return None
         return self.__getitem__(key.replace("__", "."))
 
@@ -838,7 +873,9 @@ class Directory(metaclass=NonExistingDirectory):
         meta_path = self.path / "_meta.yaml"
 
         if is_modified:
-            write_meta(path=meta_path, config=self.config, status=self.status, modified=True)
+            write_meta(
+                path=meta_path, config=self.config, status=self.status, modified=True
+            )
 
     def check_size(self, warning_at=20 * 1024**3, print_size=False) -> None:
         """Prints the size of the directory in bytes."""
@@ -976,6 +1013,10 @@ def _parse_directory_args(
     elif len(args) == 1 and isinstance(args[0], Mapping) and len(kwargs) == 0:
         return None, dict(args[0])
 
+    # (config=conf)
+    elif len(args) == 0 and len(kwargs) == 1 and "config" in kwargs:
+        return None, kwargs["config"]
+
     # (**conf)
     elif len(args) == 0 and len(kwargs) > 0:
         return None, kwargs
@@ -1012,9 +1053,30 @@ def _parse_directory_args(
         root_dir = get_root_dir()
         return root_dir / args[0], dict(args[1])
 
+    # (path, config=conf)
+    elif (
+        len(args) == 1
+        and isinstance(args[0], Path)
+        and len(kwargs) == 1
+        and "config" in kwargs
+    ):
+        return Path(args[0]), kwargs["config"]
+
     # (path, **conf)
     elif len(args) == 1 and isinstance(args[0], Path) and len(kwargs) > 0:
         return Path(args[0]), kwargs
+
+    # (str, config=conf)
+    elif (
+        len(args) == 1
+        and isinstance(args[0], str)
+        and len(kwargs) == 1
+        and "config" in kwargs
+    ):
+        if args[0][0] in [".", "..", "~", "@"]:
+            return Path(args[0]), kwargs["config"]
+        root_dir = get_root_dir()
+        return root_dir / args[0], kwargs["config"]
 
     # (str, **conf)
     elif len(args) == 1 and isinstance(args[0], str) and len(kwargs) > 0:
@@ -1149,24 +1211,15 @@ def _directory_from_config(cls: Directory, conf: Mapping[str, object]) -> Direct
                     warnings.simplefilter("always")
                     warnings.warn(
                         (
-                            f"The Directory {path} has been modified after being build."
-                            + f"\nBuilding a new directory {new_dir_path} to prevent that the files you would get from the object"
-                            + " mismatch the files you would expect based on your __init__ and configuration."
-                            + "\nYou can circumvent this"
-                            + " by e.g. using the explicit path as constructor (see Directory docs)."
+                            f"Skipping Directory {path}, which has been modified after "
+                            " being build."
+                            + "\nYou can use the explicit path as constructor (see "
+                            " Directory docs)."
                         ),
                         ModifiedWarning,
                         stacklevel=2,
                     )
-                return _new_directory()
-            # raise ModifiedError(
-            #             f"The Directory {path} has been modified after being build."
-            #             + "\nThis could mean that the files you would get from the object"
-            #             + " mismatch the files you would expect based on your configuration."
-            #             + "\nYou can circumvent this error"
-            #             + " by e.g. using the path as constructor"
-            #             + " as explained in the Directory docs."
-            #         )
+                continue
 
             while meta.status == "running":
                 sleep(0.01)
@@ -1466,8 +1519,9 @@ def _forward_subclass(cls: type, config: object = {}) -> object:
 
 class H5Reader:
     """Wrapper around h5 read operations to prevent persistent file handles
-    by ensuring file handles are open only during each access operation. 
+    by ensuring file handles are open only during each access operation.
     """
+
     def __init__(self, path, assert_swmr=True, n_retries=10):
         self.path = path
         with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
@@ -1508,11 +1562,13 @@ class H5Reader:
             raise AttributeError(f"Attribute {key} not found.")
         # wrap callable attributes to open file before calling function
         if callable(value):
+
             def safe_wrapper(*args, **kwargs):
                 # not trying `n_retries` times here, just for simplicity
                 with h5.File(self.path, mode="r", libver="latest", swmr=True) as f:
                     output = getattr(f["data"], key)(*args, **kwargs)
                 return output
+
             return safe_wrapper
         # otherwise just return value
         else:
@@ -1622,6 +1678,7 @@ def _copy_file(dst: Path, src: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(src, dst)
 
+
 def _copy_dir(dst: Path, src: Path) -> None:
     # shutil.rmtree(dst, ignore_errors=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1655,7 +1712,9 @@ def read_meta(path: Path) -> Namespace:
             assert isinstance(meta.config, Namespace)
         elif hasattr(meta, "spec"):  # for backwards compatibility
             assert isinstance(meta.spec, Namespace)
-            warnings.warn(f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible.")
+            warnings.warn(
+                f"Directory {path} has legacy `spec` attribute instead of `meta`. Please update when possible."
+            )
             meta["config"] = meta.pop("spec")
             # resp = input("Would you like to overwrite the existing config with an updated version? (y/n): ")
             # if resp.strip().lower() == "y":
@@ -1668,13 +1727,17 @@ def read_meta(path: Path) -> Namespace:
 
 def write_meta(path: Path, **kwargs):
     yaml = YAML()
+
     # support dumping numpy objects
     def represent_numpy_float(self, value):
         return self.represent_float(float(value))
+
     def represent_numpy_int(self, value):
         return self.represent_int(int(value))
+
     def represent_numpy_array(self, value):
         return self.represent_sequence(value.tolist())
+
     yaml.Representer.add_multi_representer(np.ndarray, represent_numpy_array)
     yaml.Representer.add_multi_representer(np.floating, represent_numpy_float)
     yaml.Representer.add_multi_representer(np.integer, represent_numpy_int)
