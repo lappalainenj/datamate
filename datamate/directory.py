@@ -580,8 +580,10 @@ class Directory(metaclass=NonExistingDirectory):
             path = self.path / key
         except TypeError as e:
             if not self.path.exists():
+                # we wanted to index an H5Dataset but we tried to index a Directory
+                # because the H5Dataset does not exist
                 raise (
-                    AssertionError(
+                    FileNotFoundError(
                         f"Indexing {self.path.name} at {key} not possible for"
                         f" Directory at {self.path.parent}. File "
                         f"{self.path.name}.h5 does not exist."
