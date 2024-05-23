@@ -202,10 +202,7 @@ class Namespace(Dict[str, Any]):
         return deepcopy(self)
 
     def to_dict(self):
-        return dict(
-            (k, to_dict(v) if isinstance(v, dict) or isinstance(v, Namespace) else v)
-            for k, v in self.items()
-        )
+        return to_dict(self)
 
     def depth(self):
         return depth(self)
@@ -288,8 +285,10 @@ def is_disjoint(dict1, dict2):
 def to_dict(obj):
     if isinstance(obj, dict):
         return dict((k, to_dict(v)) for k, v in obj.items())
+    if isinstance(obj, list):
+        return [to_dict(v) for v in obj]
     elif isinstance(obj, Namespace):
-        return obj.to_dict()
+        return dict((k, to_dict(v)) for k, v in obj.items())
     else:
         return obj
 
