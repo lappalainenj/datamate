@@ -55,7 +55,6 @@ from datamate.namespaces import (
 )
 
 __all__ = ["Directory", "DirectoryDiff", "ArrayFile"]
-__all__ = ["Directory", "DirectoryDiff", "ArrayFile"]
 
 # -- Custom Errors and Warnings ------------------------------------------------
 
